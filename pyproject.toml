@@ -1,0 +1,31 @@
+[project]
+name = "clearcote-jet"
+version = "0.1.0"
+description = "Goal-driven browser agent for Clearcote: a fast decision model picks each step, Clearcote carries it out with human-paced input. MCP server, CLI and Python API."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+keywords = ["clearcote", "browser-agent", "ai-agent", "web-agent", "mcp", "mcp-server", "model-context-protocol",
+            "browser-automation", "playwright", "chromium"]
+dependencies = ["clearcote>=0.32", "httpx>=0.27,<1", "mcp>=2.2,<3"]
+
+[project.urls]
+Homepage = "https://clearcotelabs.com"
+Repository = "https://github.com/clearcotelabs/clearcote-jet"
+
+[project.scripts]
+clearcote-jet = "clearcote_jet.cli:main"
+clearcote-jet-mcp = "clearcote_jet.mcp_server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["clearcote_jet"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

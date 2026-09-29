@@ -1,0 +1,35 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Loan request</title>
+<style>
+  body { font: 16px system-ui; margin: 40px; }
+  #curtain { position: fixed; left: 0; top: 380px; width: 420px; height: 120px; background: rgba(120,0,160,.3); }
+  section { margin: 16px 0; }
+  #filler { height: 1600px; }
+</style>
+<script>
+  window.rec = { qsa: 0, efp: 0, events: [], moves: 0, movesBeforeFirstDown: null, cacheSeen: false };
+  const qsa = Document.prototype.querySelectorAll, efp = Document.prototype.elementFromPoint;
+  Document.prototype.querySelectorAll = function (...a) { rec.qsa++; return qsa.apply(this, a); };
+  Element.prototype.querySelectorAll = function (...a) { rec.qsa++; return qsa.apply(this, a); };
+  Document.prototype.elementFromPoint = function (...a) { rec.efp++; return efp.apply(this, a); };
+  Object.defineProperty(window, '__ca', { get() { rec.cacheSeen = true; return undefined; }, set() { rec.cacheSeen = true; } });
+  addEventListener('mousemove', () => rec.moves++, true);
+  addEventListener('mousedown', () => { if (rec.movesBeforeFirstDown === null) rec.movesBeforeFirstDown = rec.moves; }, true);
+  for (const t of ['mousedown', 'mouseup', 'click', 'keydown', 'input', 'change', 'wheel'])
+    addEventListener(t, e => rec.events.push({ t, trusted: e.isTrusted, id: e.target.id || e.target.tagName,
+      x: e.clientX, y: e.clientY, at: Math.round(performance.now()) }), true);
+</script></head>
+<body>
+  <h1>Loan request</h1>
+  <section><label for="reader">Reader number</label> <input id="reader" type="text" style="width:300px"></section>
+  <section><label for="branch">Collect from</label>
+    <select id="branch"><option value="central">Central library</option><option value="north" disabled>North branch</option>
+      <option value="harbour">Harbour branch</option><option value="airport">Airport kiosk</option></select></section>
+  <section><button id="send" onclick="document.getElementById('out').textContent='Requested: '+document.getElementById('reader').value+' / '+document.getElementById('branch').value">Send request</button></section>
+  <p id="out"></p>
+  <section style="position:absolute; top:400px; left:40px"><button id="under-curtain">Renew all loans</button></section>
+  <div id="curtain"></div>
+  <section style="margin-top:200px"><input type="password" id="pin" placeholder="Library PIN"></section>
+  <div id="filler"></div>
+  <button id="bottom">Back to the top</button>
+</body></html>
