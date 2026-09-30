@@ -34,26 +34,31 @@ class BrowserClosed(RuntimeError):
 
 
 class IsolatedWorld:
-    """A CDP isolated world in the page's main frame (the mechanism extension content scripts use).
+    """A CDP isolated world in one frame (the mechanism extension content scripts use): the page's main frame, or
+    the child frame `frame_id` reached through the CDP session `cdp` that hosts it.
 
     It shares the DOM but has its own globals, so the node cache (window.__ca) and every read are invisible to
     page scripts. A navigation destroys the world; the next evaluate fails on the dead context id and creates a
     fresh one. evaluate returns None when the read is impossible; callers treat that as "not observed".
     """
 
-    def __init__(self, page):
-        self.page, self.cdp, self.ctx = page, None, None
+    def __init__(self, page, cdp=None, frame_id=None):
+        self.page, self.cdp, self.frame_id, self.ctx = page, cdp, frame_id, None
+
+    async def session(self):
+        if self.cdp is None:
+            self.cdp = await self.page.context.new_cdp_session(self.page)
+        return self.cdp
 
     async def evaluate(self, expression):
         for _ in range(2):
             try:
-                if self.cdp is None:
-                    self.cdp = await self.page.context.new_cdp_session(self.page)
+                cdp = await self.session()
                 if self.ctx is None:
-                    tree = await self.cdp.send("Page.getFrameTree")
-                    world = await self.cdp.send("Page.createIsolatedWorld", {"frameId": tree["frameTree"]["frame"]["id"]})
+                    frame_id = self.frame_id or (await cdp.send("Page.getFrameTree"))["frameTree"]["frame"]["id"]
+                    world = await cdp.send("Page.createIsolatedWorld", {"frameId": frame_id})
                     self.ctx = world["executionContextId"]
-                result = await self.cdp.send("Runtime.evaluate", {
+                result = await cdp.send("Runtime.evaluate", {
                     "expression": expression, "contextId": self.ctx, "returnByValue": True})
             except PlaywrightError:
                 if self.page.is_closed():
@@ -64,6 +69,25 @@ class IsolatedWorld:
                 return None
             return result.get("result", {}).get("value")
         return None
+
+    async def call_on(self, backend_node_id, function, *args):
+        """function(...args) with `this` = a DOM node of this frame, run in this world. None when either is gone."""
+        if await self.evaluate("1") is None:
+            return None
+        try:
+            node = await self.cdp.send("DOM.resolveNode", {
+                "backendNodeId": backend_node_id, "executionContextId": self.ctx, "objectGroup": "ca"})
+            result = await self.cdp.send("Runtime.callFunctionOn", {
+                "functionDeclaration": function, "objectId": node["object"]["objectId"],
+                "arguments": [{"value": a} for a in args], "returnByValue": True})
+            await self.cdp.send("Runtime.releaseObjectGroup", {"objectGroup": "ca"})
+        except PlaywrightError:
+            if self.page.is_closed():
+                raise
+            return None
+        if "exceptionDetails" in result:
+            return None
+        return result.get("result", {}).get("value")
 
 
 def aim_point(box):
@@ -140,6 +164,7 @@ class Session:
         page = blank[0] if blank else await self.context.new_page()
         page.on("crash", lambda *_: setattr(page, "_ca_crashed", True))
         page._ca_world = IsolatedWorld(page)
+        page._ca_main, page._ca_frames, page._ca_oopif = None, {}, {}  # see _frames()
         if url:
             await page.goto(url, wait_until="domcontentloaded")
         return page
@@ -153,8 +178,147 @@ class Session:
             await self.context.close()
 
     @staticmethod
-    async def _eval(page, expression):
-        return await page._ca_world.evaluate(expression)
+    async def _eval(page, expression, frame=None):
+        """Evaluate in the main frame's isolated world, or in child frame `frame`'s (None if it is gone)."""
+        world = page._ca_world if frame is None else page._ca_frames.get(frame, {}).get("world")
+        return await world.evaluate(expression) if world else None
+
+    async def _frames(self, page):
+        """The page's child frames (iframes, at any depth): {frame id: info}, each with its own isolated world that is
+        kept across calls, so node ids stay valid from observe to act.
+
+        Same-process frames are reached through the page's CDP session; out-of-process ones (cross-site iframes)
+        through the session Playwright attaches to each. info: the session hosting the frame's document, its parent
+        frame, and its local root (the out-of-process frame whose coordinates its geometry is in; None = the tab's).
+        """
+        root = await page._ca_world.session()
+        page._ca_oopif = {f: s for f, s in page._ca_oopif.items() if not f.is_detached()}
+        sessions = [root]
+        for frame in page.frames[1:]:
+            url, session = page._ca_oopif.get(frame, (None, None))
+            # A frame changes process only by navigating (a widget iframe starts as a same-process about:blank, then
+            # loads its cross-site page), so look again whenever its URL changed.
+            if url != frame.url:
+                if session:  # still out of process? its session dies with the process it was attached to
+                    try:
+                        await session.send("Page.getFrameTree")
+                    except PlaywrightError:
+                        session = None
+                if not session:
+                    try:
+                        session = await page.context.new_cdp_session(frame)
+                    except PlaywrightError:
+                        session = None  # same process as its parent: the parent's session reaches it
+                page._ca_oopif[frame] = (frame.url, session)
+            if session:
+                sessions.append(session)
+        found = {}
+        for session in sessions:  # the page's first, so an out-of-process frame's own session wins
+            try:
+                tree = (await session.send("Page.getFrameTree"))["frameTree"]
+            except PlaywrightError:
+                continue
+            if session is root:
+                page._ca_main, local_root, stack = tree["frame"]["id"], None, list(tree.get("childFrames", []))
+            else:
+                local_root, stack = tree["frame"]["id"], [tree]
+            while stack:
+                node = stack.pop()
+                stack.extend(node.get("childFrames", []))
+                found[node["frame"]["id"]] = {"session": session, "parent": node["frame"].get("parentId"),
+                                              "local_root": local_root}
+        frames = {}
+        for fid, info in found.items():
+            old = page._ca_frames.get(fid)
+            world = old["world"] if old and old["session"] is info["session"] else IsolatedWorld(page, info["session"], fid)
+            frames[fid] = {**info, "world": world}
+        page._ca_frames = frames
+        return frames
+
+    async def _frame_box(self, page, fid):
+        """Where child frame `fid`'s viewport sits in the tab's viewport: (x, y, width, height, backend node id of its
+        <iframe> element), or None when it is gone or not laid out. Geometry is read fresh on every call."""
+        info = page._ca_frames.get(fid)
+        parent = info and info["parent"]
+        if parent and parent == page._ca_main:
+            session, base = page._ca_world.cdp, (0, 0)
+        elif parent in page._ca_frames:
+            owner = page._ca_frames[parent]
+            session, base = owner["session"], (0, 0)
+            if owner["local_root"]:  # the parent is out of process: its CDP geometry is relative to its own viewport
+                outer = await self._frame_box(page, owner["local_root"])
+                if not outer:
+                    return None
+                base = outer[:2]
+        else:
+            return None
+        try:
+            element = (await session.send("DOM.getFrameOwner", {"frameId": fid}))["backendNodeId"]
+            quad = (await session.send("DOM.getBoxModel", {"backendNodeId": element}))["model"]["content"]
+        except PlaywrightError:
+            return None
+        return base[0] + quad[0], base[1] + quad[1], quad[2] - quad[0], quad[5] - quad[1], element
+
+    async def _reachable(self, page, fid, points, box=None):
+        """For points in tab coordinates: does each land on frame `fid`'s <iframe> element, in its parent and through
+        every enclosing frame? A control under an overlay or another iframe is neither offered nor clicked."""
+        box = box or await self._frame_box(page, fid)
+        parent = page._ca_frames[fid]["parent"] if box else None
+        if parent and parent == page._ca_main:
+            world, origin = page._ca_world, (0, 0)
+        else:
+            outer = parent in page._ca_frames and await self._frame_box(page, parent)
+            if not outer:
+                return [False] * len(points)
+            world, origin = page._ca_frames[parent]["world"], outer[:2]
+        hits = await world.call_on(box[4], _OWNER_HITS, [[x - origin[0], y - origin[1]] for x, y in points])
+        hits = hits or [False] * len(points)
+        if parent != page._ca_main and any(hits):
+            hits = [a and b for a, b in zip(hits, await self._reachable(page, parent, points, outer))]
+        return hits
+
+    async def _snapshot(self, page):
+        """The main frame's snapshot plus, from every child frame a person can see, its text and the controls they can
+        reach. Frame controls carry `frame`; each frame's page key and guards are kept in state["frames"]."""
+        state = await self._eval(page, SNAPSHOT_JS)
+        if not state:
+            return state
+        marker, texts, controls, frame_markers = json.loads(state["marker"]), [state["text"]], [], {}
+        width, height = marker[4], marker[5]  # the tab's innerWidth, innerHeight
+        state["frames"] = {}
+        for fid in await self._frames(page):
+            box = await self._frame_box(page, fid)
+            if not box:
+                continue
+            left, top = max(box[0], 0), max(box[1], 0)
+            right, bottom = min(box[0] + box[2], width), min(box[1] + box[3], height)
+            if right - left < 10 or bottom - top < 10:  # off screen, collapsed, or a tracking pixel
+                continue
+            snap = await self._eval(page, SNAPSHOT_JS, fid)
+            if not snap:
+                continue
+            items = [a for a in snap["actions"] if "node" in a]
+            boxes = await self._eval(page, "[%s].map(id => window.__ca?.box(id, 'click'))"
+                                     % ",".join(str(a["node"]) for a in items), fid) or [None] * len(items)
+            points = [((left + right) / 2, (top + bottom) / 2)] + [
+                (box[0] + b["x"] + b["width"] / 2, box[1] + b["y"] + b["height"] / 2) if b else (-1, -1) for b in boxes]
+            hits = await self._reachable(page, fid, points, box)
+            reach = [dict(a, frame=fid) for a, b, hit in zip(items, boxes, hits[1:]) if b and hit]
+            if not hits[0] and not reach:  # covered where it shows
+                continue
+            controls += reach
+            texts.append(snap["text"])
+            state["frames"][fid] = {"page_key": snap["page_key"], "guards": snap["guards"]}
+            frame_markers[fid] = snap["marker"]
+        if controls:
+            n = sum(1 for a in state["actions"] if "node" in a)  # the page's controls come first, then scroll and wait
+            state["actions"][n:n] = controls
+            for i, a in enumerate(state["actions"][:n + len(controls)]):
+                a["id"] = f"e{i + 1}"
+        state["text"] = "\n".join(t for t in texts if t)[:8000]
+        marker.append(frame_markers)  # a change inside a frame (a box getting ticked) is a page change
+        state["marker"] = json.dumps(marker)
+        return state
 
     async def observe(self, page, after=None):
         if after and after["kind"] == "fill" and after.get("role") == "combobox":
@@ -168,7 +332,7 @@ class Session:
         state = previous = None
         for attempt in range(100):  # up to ~10 s while a navigation settles
             self.check_open(page)  # a closed browser/tab fails at once instead of spinning here
-            state = await self._eval(page, SNAPSHOT_JS) or state
+            state = await self._snapshot(page) or state
             # Pages keep mutating after load (late JS panels, lazy widgets), which invalidates decisions.
             # Wait until two snapshots 100 ms apart agree, capped at ~3 s.
             # A blank document (no text, no elements) is a page still booting, not a settled one.
@@ -185,13 +349,16 @@ class Session:
     async def fresh(self, page, state, action=None):
         self.last_diff = ""
         if action is not None and action["kind"] in {"click", "select"}:
+            frame = action.get("frame")
             current = await self._eval(
                 page,
                 f"(() => {{ const c=window.__ca; return c ? [JSON.stringify(c.pageKey()),"
                 f"JSON.stringify(c.guard(c.nodes.get({int(action['node'])})))] : null; }})()",
+                frame,
             )
-            return current == [state["page_key"], state["guards"].get(str(action["node"]))]
-        current = await self._eval(page, SNAPSHOT_JS)
+            seen = state.get("frames", {}).get(frame, {}) if frame else state  # a frame's control: that frame's keys
+            return current == [seen.get("page_key"), seen.get("guards", {}).get(str(action["node"]))]
+        current = await self._snapshot(page)
         same = bool(current) and current["marker"] == state["marker"]
         if current and not same:
             self.last_diff = _marker_diff(state["marker"], current["marker"])  # reported in the stale list
@@ -208,11 +375,11 @@ class Session:
         if kind == "scroll":
             await page.mouse.wheel(0, action["delta"])  # humanized: stepped wheel ticks when humanize is on
             return
-        node = int(action["node"])
+        node, frame = int(action["node"]), action.get("frame")
         if kind == "select":
-            await self._select_from_list(page, node, action["value"])
+            await self._select_from_list(page, node, action["value"], frame)
             return
-        await self._press(page, node, kind)
+        await self._press(page, node, kind, frame)
         if kind == "fill":
             if self.humanize:
                 await asyncio.sleep(random.uniform(0.1, 0.25))
@@ -224,41 +391,57 @@ class Session:
                 await asyncio.sleep(random.uniform(0.05, 0.15))
             await page.keyboard.type(text)  # humanized per-key typing when humanize is on
 
-    async def _press(self, page, node, kind="click"):
-        """Move to the element and press it: the one mouse path every click, field and dropdown goes through."""
-        box = await self._eval(page, f"window.__ca?.box({node}, {json.dumps(kind)})")
-        if not box:
+    async def _hits(self, page, node, x, y, frame=None):
+        """Does the tab point (x, y) land on the node: inside its frame, and on that frame through every enclosing one?"""
+        if frame is None:
+            return bool(await self._eval(page, f"window.__ca?.hit({node}, {x}, {y})"))
+        box = await self._frame_box(page, frame)  # fresh: the frame may have moved during the approach
+        return bool(box and await self._eval(page, f"window.__ca?.hit({node}, {x - box[0]}, {y - box[1]})", frame)
+                    and (await self._reachable(page, frame, [(x, y)], box))[0])
+
+    async def _press(self, page, node, kind="click", frame=None):
+        """Move to the element and press it: the one mouse path every click, field and dropdown goes through.
+
+        A control inside an iframe is pressed at tab coordinates: its box in the frame, moved by the frame's position.
+        """
+        box = await self._eval(page, f"window.__ca?.box({node}, {json.dumps(kind)})", frame)
+        origin = (await self._frame_box(page, frame) or [None])[:2] if box and frame else (0, 0)
+        if not box or origin[0] is None:
             raise StalePage("Target changed or is covered. Observe again.")
+        box = {**box, "x": box["x"] + origin[0], "y": box["y"] + origin[1]}
         if not self.humanize:
-            # box() already hit-tested the center. Playwright's plain click: real input events, no delays.
-            await page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+            # box() already hit-tested the center within its frame. Playwright's plain click: real input events.
+            x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+            if frame and not await self._hits(page, node, x, y, frame):
+                raise StalePage("Target's frame is covered. Observe again.")
+            await page.mouse.click(x, y)
             return
         # An aim point can land on an overlay inside the box (e.g. a search icon over an input's left edge).
         # Pick one that actually hits the node before spending a mouse move on it.
         for _ in range(5):
             x, y = aim_point(box)
-            if await self._eval(page, f"window.__ca?.hit({node}, {x}, {y})"):
+            if await self._hits(page, node, x, y, frame):
                 break
         else:
             raise StalePage("No aim point inside the target hits it; it is covered.")
         await page.mouse.move(x, y)  # humanized: curved, Fitts-timed path from where the cursor is
         # The move takes hundreds of ms; the page may have shifted. Re-hit-test before pressing.
-        if not await self._eval(page, f"window.__ca?.hit({node}, {x}, {y})"):
+        if not await self._hits(page, node, x, y, frame):
             raise StalePage("Target moved or became covered during the approach.")
         await page.mouse.down()
         await asyncio.sleep(random.uniform(0.06, 0.14))  # a finger holds the button for a moment
         await page.mouse.up()
 
-    async def _select_from_list(self, page, node, value):
+    async def _select_from_list(self, page, node, value, frame=None):
         """Choose a native <select> option the way a person does: open the list, arrow to it, press Enter.
 
         That fires one trusted `change`. Arrow keys on a closed select change the value at every step (Windows), so a
         page that submits its form on `change` would reload before the wanted option is reached.
         """
-        plan = await self._eval(page, _SELECT_PLAN % (node, json.dumps(value)))
+        plan = await self._eval(page, _SELECT_PLAN % (node, json.dumps(value)), frame)
         if not plan:
             raise StalePage("Dropdown or option is gone. Observe again.")
-        await self._press(page, node)  # opens the option list, highlighting the current option
+        await self._press(page, node, frame=frame)  # opens the option list, highlighting the current option
         await asyncio.sleep(random.uniform(0.25, 0.45))
         key = "ArrowDown" if plan["to"] > plan["from"] else "ArrowUp"
         for _ in range(plan["steps"]):  # the list skips disabled options by itself
@@ -266,7 +449,7 @@ class Session:
             await asyncio.sleep(random.uniform(0.06, 0.14))
         await page.keyboard.press("Enter")
         await asyncio.sleep(0.15)
-        current = await self._eval(page, f"window.__ca?.nodes.get({node})?.selectedIndex")
+        current = await self._eval(page, f"window.__ca?.nodes.get({node})?.selectedIndex", frame)
         # None: the element is gone because the page reacted to the change (e.g. submitted its form).
         if current is not None and current != plan["to"]:
             raise RuntimeError("Dropdown selection was not confirmed; inspect before retrying.")
@@ -293,7 +476,7 @@ class Session:
 
 
 MARKER_PARTS = ["timeOrigin", "url", "scrollX", "scrollY", "innerWidth", "innerHeight", "title", "text", "actions",
-                "form_values"]
+                "form_values", "frames"]
 
 
 def _marker_diff(old, new):
@@ -315,6 +498,14 @@ def _marker_diff(old, new):
             out.append(f"{name} {str(a)[:60]} → {str(b)[:60]}")
     return "; ".join(out)
 
+
+# Called on an <iframe> element in its parent's isolated world: does each point (parent coordinates) hit it?
+_OWNER_HITS = """function(points) {
+  const at = (x, y) => { let t = document.elementFromPoint(x, y);
+    while (t?.shadowRoot) { const i = t.shadowRoot.elementFromPoint(x, y); if (!i || i === t) break; t = i; }
+    return t; };
+  return points.map(([x, y]) => at(x, y) === this);
+}"""
 
 _OPTIONS_VISIBLE = """[...document.querySelectorAll('[role="option"]')].some(e => {
   const r = e.getBoundingClientRect();

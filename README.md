@@ -144,8 +144,8 @@ Put them in `.env` (see `.env.example`) or the environment:
 
 ## How it works
 
-1. **Look.** Jet lists the controls a person could use right now: visible, enabled, not hidden behind a pop-up.
-   Password fields are never read.
+1. **Look.** Jet lists the controls a person could use right now: visible, enabled, not hidden behind a pop-up,
+   including those inside embedded frames (iframes), same-site or cross-site. Password fields are never read.
 2. **Decide.** One request to the decision model picks the kind of step and the control together, with a probability for
    every option. The model only chooses from that list; it never writes code or coordinates.
 3. **Act.** Jet checks that the page has not changed, then moves the mouse along a curved path, clicks, and types key by
@@ -165,8 +165,8 @@ Put them in `.env` (see `.env.example`) or the environment:
 ## Known limits
 
 - On very long pages it may scroll rather than jump through a table of contents (see the RFC run above).
-- Links that open a new tab are not followed, and frames, closed shadow roots, canvas apps, file uploads and CAPTCHAs
-  are not handled.
+- Links that open a new tab are not followed, and closed shadow roots, canvas apps, file uploads and CAPTCHAs are not
+  handled. Controls inside iframes are; scrolling inside an iframe is not.
 - `done` is the model's judgement. Check what matters.
 - Jet only types words that appear in your goal (unless you configure a text model), so write the values into it.
 
@@ -179,6 +179,7 @@ pip install -e . pytest ruff
 ruff check . && pytest tests -q            # offline: no browser, no model calls
 python tests/e2e/check_browser_layer.py    # visible browser, scripted steps, a local test page
 python tests/e2e/check_full_loop.py        # the whole loop with a stand-in for the model
+python tests/e2e/check_frames.py           # controls inside same-site and cross-site iframes
 ```
 
 ## License

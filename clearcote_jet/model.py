@@ -67,7 +67,7 @@ def action_space(actions):
         if kind not in operations:
             controls[action["id"].upper()] = action
             continue
-        node = action["node"]
+        node = (action.get("frame"), action["node"])  # node ids are per frame: an iframe's count from 1 as well
         if node not in indices:
             index = str(len(elements) + 1)
             indices[node] = index
