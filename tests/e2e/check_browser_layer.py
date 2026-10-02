@@ -1,21 +1,25 @@
 """Headed end-to-end check of clearcote_jet.browser with scripted decisions (no model calls).
 
 Proves on real Clearcote: humanize is installed, reads are invisible to the page, only reachable controls are
-offered, every input event is trusted, clicks arrive after a mouse path, the native <select> goes by keyboard,
-scroll works, and markdown extraction sees the result. The profile dir is deleted afterwards.
+offered, a password field is typed into but never read, every input event is trusted, clicks arrive after a mouse
+path, the native <select> goes by keyboard, scroll works, and markdown extraction sees the result. The profile dir is
+deleted afterwards.
 """
 
 import asyncio
+import json
 import shutil
 import sys
 import tempfile
 import time
 from pathlib import Path
 
+from clearcote_jet import model
 from clearcote_jet.browser import Session
 
 HERE = Path(__file__).parent
 FIXTURE = (HERE / "fixture.html").resolve().as_uri()
+PIN = "Zq9-library-pin"  # typed into the password field
 failures = []
 
 
@@ -51,7 +55,9 @@ async def main():
         check(pick(state, "select", "Collect from → Harbour branch") is not None, "select option offered")
         check(pick(state, "select", "North branch") is None, "disabled option not offered")
         check(pick(state, "click", "Renew all loans") is None, "control behind the curtain not offered")
-        check(not any("PIN" in x for x in labels), "password field never offered")
+        pin = pick(state, "fill", "Library PIN")
+        check(bool(pin) and pin["role"] == "textbox" and pin["value"] == "" and pin.get("filled") == "false",
+              "password field offered as fill, shown as empty, with no value")
         check(pick(state, "click", "Back to the top") is None, "off-screen control not offered")
         check(pick(state, "scroll", "Scroll down") is not None, "scroll down offered")
 
@@ -59,6 +65,14 @@ async def main():
         await session.act(page, state, action, "A-4417")
         state = await session.observe(page, after=action)
         check(await page.input_value("#reader") == "A-4417", "fill typed the reader number")
+
+        action = pick(state, "fill", "Library PIN")
+        await session.act(page, state, action, PIN)
+        state = await session.observe(page, after=action)
+        check(await page.input_value("#pin") == PIN, "fill typed the PIN into the password field")
+        check((pick(state, "fill", "Library PIN") or {}).get("filled") == "true", "the password field shows as filled")
+        check(PIN not in json.dumps([state, model.page_view(state, [])[0]]),
+              "the PIN is in no snapshot part (actions, text, marker, page key, guards) nor the model's view")
 
         action = pick(state, "select", "Airport kiosk")
         await session.act(page, state, action)
@@ -91,6 +105,7 @@ async def main():
         await page.evaluate("scrollTo(0, 0)")
         md = await session.settled_markdown(page, quiet=0.3, cap=2)
         check("Requested: A-4417 / airport" in md and "# Loan request" in md, "markdown extraction sees the result")
+        check(PIN not in md and PIN not in json.dumps(await session.observe(page)), "the PIN is never read back")
 
         rec = await page.evaluate("window.rec")
         kinds = {}

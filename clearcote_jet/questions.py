@@ -31,8 +31,8 @@ In a date picker choose the requested date, then its confirmation; if the reques
 is already in the requested state."""
 
 ELEMENT_FORMAT = ('Each element: [index] role "label", then its current value=, state flags '
-                  '(checked/selected/expanded), ops= the operations it supports (if absent: CLICK only), '
-                  'and options: for dropdowns.')
+                  '(checked/selected/expanded; filled= on a password field, whose value is never shown), '
+                  'ops= the operations it supports (if absent: CLICK only), and options: for dropdowns.')
 
 TEXT_VALUE = """Return a JSON object with exactly one key, text: the exact string to enter in the selected field.
 Infer the value from the original goal and field meaning, using current page context and history.

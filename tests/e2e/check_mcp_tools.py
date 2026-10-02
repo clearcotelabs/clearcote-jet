@@ -1,9 +1,10 @@
 """Headed end-to-end check of the MCP take-over tools on real Clearcote, called in-process as the server calls them.
 
 snapshot opens the local loan form; act fills it in by index (no model) and the request appears on the page. Also:
-a snapshot that went stale is refused, a busy tab answers busy, a wrong index is answered with the valid ones, a
-screenshot leaves the page's DOM untouched, every input event is trusted and the page never sees the reads, and (with
-TYPESAFE_API_KEY set) one step by instruction. The profile dir is deleted afterwards.
+a password field is typed into while only filled=true/false shows of it, a snapshot that went stale is refused, a busy
+tab answers busy, a wrong index is answered with the valid ones, a screenshot leaves the page's DOM untouched, every
+input event is trusted and the page never sees the reads, and (with TYPESAFE_API_KEY set) one step by instruction.
+The profile dir is deleted afterwards.
 """
 
 import asyncio
@@ -21,6 +22,7 @@ from clearcote_jet.cli import load_env_file
 
 HERE = Path(__file__).parent
 FIXTURE = (HERE / "fixture.html").resolve().as_uri()
+PIN = "Zq9-library-pin"  # typed into the password field
 failures = []
 
 
@@ -52,11 +54,16 @@ async def main():
         check(bool(reader and airport and index(view, r'\[(\d+)\] button "Send request"')),
               "the element table names the field, the option and the button")
         check(not any("Renew all loans" in line for line in elements(view)), "a control under the curtain is not offered")
-        check(not any("PIN" in line for line in elements(view)), "the password field is not offered")
+        pin = index(view, r'\[(\d+)\] textbox "Library PIN" filled=false ops=TYPE_TEXT')
+        check(bool(pin), "the password field is offered to type into, shown only as filled=false")
 
         out = await mcp_server.act("t1", op="TYPE_TEXT", target=reader, text="A-4417")
         check("status: done" in out and "page_changed: True" in out and "model:" not in out,
               "act typed the reader number by index, without the model")
+        out = await mcp_server.act("t1", op="TYPE_TEXT", target=pin, text=PIN)
+        view = out[out.index("tab_id:"):]  # the new snapshot; the did: line above it echoes the caller's own text
+        check("status: done" in out and re.search(r'\] textbox "Library PIN" filled=true ops=', view)
+              and PIN not in view, "act typed the PIN; the new snapshot says filled=true, not the PIN")
         out = await mcp_server.act("t1", op="SELECT", target=airport)
         check("status: done" in out and 'value="Airport kiosk"' in out, "act chose the airport kiosk by index")
         send = index(out, r'\[(\d+)\] button "Send request"')  # from the new snapshot act returned

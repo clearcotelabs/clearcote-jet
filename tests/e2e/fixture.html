@@ -22,6 +22,7 @@
 <body>
   <h1>Loan request</h1>
   <section><label for="reader">Reader number</label> <input id="reader" type="text" style="width:300px"></section>
+  <section><label for="pin">Library PIN</label> <input id="pin" type="password" style="width:300px"></section>
   <section><label for="branch">Collect from</label>
     <select id="branch"><option value="central">Central library</option><option value="north" disabled>North branch</option>
       <option value="harbour">Harbour branch</option><option value="airport">Airport kiosk</option></select></section>
@@ -29,7 +30,6 @@
   <p id="out"></p>
   <section style="position:absolute; top:400px; left:40px"><button id="under-curtain">Renew all loans</button></section>
   <div id="curtain"></div>
-  <section style="margin-top:200px"><input type="password" id="pin" placeholder="Library PIN"></section>
   <div id="filler"></div>
   <button id="bottom">Back to the top</button>
 </body></html>

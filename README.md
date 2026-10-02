@@ -197,7 +197,8 @@ Put them in `.env` (see `.env.example`) or the environment:
 ## How it works
 
 1. **Look.** Jet lists the controls a person could use right now: visible, enabled, not hidden behind a pop-up,
-   including those inside embedded frames (iframes), same-site or cross-site. Password fields are never read.
+   including those inside embedded frames (iframes), same-site or cross-site. Password fields can be filled
+   but are never read: Jet only sees whether one is empty, never what it holds.
 2. **Decide.** One request to the decision model picks the kind of step and the control together, with a probability for
    every option. The model only chooses from that list; it never writes code or coordinates.
 3. **Act.** Jet checks that the page has not changed, then moves the mouse along a curved path, clicks, and types key by

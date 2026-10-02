@@ -141,6 +141,31 @@ def test_choose_request_is_compact(monkeypatch):
     ]
 
 
+def test_a_password_field_reaches_the_model_as_filled_or_empty_never_its_value():
+    # snapshot.js reports a password field with value "" plus filled "true"/"false" (tests/test_password_fields.py
+    # checks that in a browser); here: what the model and the value chooser are sent for it.
+    actions = [
+        {"id": "e1", "node": 1, "kind": "fill", "role": "textbox", "label": "Email", "value": "reader@library.example"},
+        {"id": "e2", "node": 2, "kind": "fill", "role": "textbox", "label": "Password", "value": "", "filled": "false"},
+        {"id": "e3", "node": 2, "kind": "click", "role": "textbox", "label": "Open Password", "value": "",
+         "filled": "false"},
+        {"id": "e4", "node": 3, "kind": "fill", "role": "textbox", "label": "PIN", "value": "", "filled": "true"},
+    ]
+    page = {"url": "u", "title": "Sign in", "text": "Sign in", "actions": actions}
+    view, targets, _ = model.page_view(page, [])
+    assert view["elements"] == [
+        '[1] textbox "Email" value="reader@library.example" ops=TYPE_TEXT',
+        '[2] textbox "Password" filled=false ops=TYPE_TEXT,CLICK',
+        '[3] textbox "PIN" filled=true ops=TYPE_TEXT',
+    ]
+    assert "filled=" in view["element_format"]  # the legend explains the flag
+    assert targets["TYPE_TEXT"]["2"] is actions[1]  # a field to type into like any other
+    goal = "Sign in as reader@library.example with password CCSECRET_password_ab12cd."
+    context = model.field_context(goal, actions[1], page, [])
+    assert context["field"] == {"label": "Password", "role": "textbox", "value": ""}
+    assert "CCSECRET_password_ab12cd" in model.goal_spans(goal)  # a placeholder is a value the model can choose
+
+
 def test_settled_markdown_waits_for_late_content_and_caps():
     from clearcote_jet.browser import Session
 

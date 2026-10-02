@@ -2,7 +2,7 @@
 // below is invisible to page scripts. Must never throw: an exception makes the wrapper recreate the world.
 (() => {
   if (!document.body) return null;
-  const cache = window.__ca ||= {ids:new WeakMap(), nodes:new Map(), next:1};
+  const cache = window.__ca ||= {ids:new WeakMap(), nodes:new Map(), next:1, secret:new WeakSet()};
   const identity = e => {
     if (!cache.ids.has(e)) cache.ids.set(e,cache.next++);
     const id=cache.ids.get(e); cache.nodes.set(id,e); return id;
@@ -19,7 +19,14 @@
     while (t?.shadowRoot) { const i=t.shadowRoot.elementFromPoint(x,y); if (!i || i===t) break; t=i; }
     return t; };
   const byId=(e,id)=>e.getRootNode().getElementById?.(id) || document.getElementById(id);
-  const safe = e => !['password','file','hidden'].includes(e.type);
+  const safe = e => !['file','hidden'].includes(e.type);
+  // Password fields can be typed into but are never read: all that leaves this world is whether one holds anything.
+  // A field once seen as type=password stays secret after the page turns it into a text field ("show password").
+  const secret = e => {
+    if (e.tagName==='INPUT' && e.type==='password') cache.secret.add(e);
+    return cache.secret.has(e);
+  };
+  const formValue = e => secret(e) ? e.value.length>0 : e.value??null;
   const visible = e => !e.closest('[aria-hidden="true"],[inert]') &&
     e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
   const name = (e,seen=new Set()) => {
@@ -50,17 +57,17 @@
       if (['button','submit','reset','image'].includes(e.type)) return 'button';
       if (e.type==='search') return 'searchbox';
       if (e.type==='number') return 'spinbutton';
-      if (['text','email','url','tel',''].includes(e.type)) return 'textbox';
+      if (['text','email','url','tel','password',''].includes(e.type)) return 'textbox';
     }
     return null;
   };
   cache.pageKey=()=>[performance.timeOrigin,location.href,scrollX,scrollY,innerWidth,innerHeight,
     [...document.querySelectorAll('input,textarea,select')].filter(safe)
-      .map(e=>[identity(e),e.value,e.checked,e.selectedIndex,e.disabled,e.readOnly])];
+      .map(e=>[identity(e),formValue(e),e.checked,e.selectedIndex,e.disabled,e.readOnly])];
   cache.guard=e=>{
     if (!e?.isConnected || !visible(e)) return null;
     const scope=e.closest('form,dialog,[role="dialog"],article,li,tr,[role="row"]') || e.parentElement;
-    return [identity(e),role(e),name(e),e.value??null,e.checked??null,e.selectedIndex??null,
+    return [identity(e),role(e),name(e),formValue(e),e.checked??null,e.selectedIndex??null,
       e.readOnly??null,e.matches(':disabled'),e.getAttribute('aria-disabled'),
       e.getAttribute('aria-expanded'),e.getAttribute('aria-checked'),e.getAttribute('aria-selected'),
       e.getAttribute('href'),scope?.innerText?.slice(0,6000)||''];
@@ -104,6 +111,8 @@
       if (value!==null) base[key]=value;
     }
     if (['checkbox','radio'].includes(e.type)) base.checked=String(e.checked);
+    const isSecret=secret(e);
+    if (isSecret) base.filled=String(e.value.length>0);
     if (e.tagName==='SELECT') {
       for (const o of e.options) if (!o.selected && !o.disabled && !o.closest('optgroup[disabled]'))
         actions.push({...base,kind:'select',value:o.value,
@@ -112,7 +121,7 @@
       const editable=!e.readOnly && e.getAttribute('aria-readonly')!=='true' &&
         (['textbox','searchbox','spinbutton'].includes(rname) ||
           (rname==='combobox' && ['INPUT','TEXTAREA'].includes(e.tagName)));
-      const value='value' in e ? String(e.value) :
+      const value=isSecret ? '' : 'value' in e ? String(e.value) :
         e.isContentEditable || rname==='combobox' ? e.innerText.trim() : '';
       actions.push({...base,kind:editable?'fill':'click',value});
       if (editable) actions.push({...base,kind:'click',value,label:'Open '+base.label});

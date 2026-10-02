@@ -329,7 +329,8 @@ async def act(tab_id: str, op: str | None = None, target: str | int | None = Non
         instruction: One step in plain words ("click Reject all"); the agent picks the element (one decision).
     Also:
         text: The value for TYPE_TEXT, typed exactly as given. With instruction and no text, the value is taken from
-            the instruction's own words. Password fields are never offered.
+            the instruction's own words. A password field can be typed into but is never read: the
+            snapshot shows only filled=true or filled=false.
         screenshot: Also return an image of the visible part of the tab.
 
     Returns what was done, whether the page changed, and the new snapshot, so steps can be chained.
