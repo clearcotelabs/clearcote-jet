@@ -9,7 +9,14 @@
   const inline=e=>e.innerText.replace(/\s+/g,' ').trim();
   const walk=n=>{
     if (size>=60000) return;
-    if (n.nodeType===3) { const t=n.textContent.replace(/\s+/g,' '); if (t.trim()) push(t); return; }
+    if (n.nodeType===3) {
+      const t=n.textContent.replace(/\s+/g,' ');
+      if (t.trim()) push(t);
+      // A whitespace-only node still separates words: between inline elements (<b>a</b> <i>b</i>), and on pages
+      // that wrap every character in its own element (example.com now does), where dropping it lost every space.
+      else if (t && out.length && !/\s$/.test(out[out.length-1])) push(' ');
+      return;
+    }
     if (n.nodeType!==1 || n.matches(SKIP)) return;
     if (!n.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return;
     const tag=n.tagName;
