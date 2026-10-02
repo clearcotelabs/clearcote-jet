@@ -7,6 +7,7 @@ page's JavaScript globals, so page scripts never see them.
 """
 
 import asyncio
+import base64
 import json
 import logging
 import random
@@ -456,6 +457,17 @@ class Session:
 
     async def markdown(self, page):
         return await self._eval(page, MARKDOWN_JS) or ""
+
+    async def screenshot(self, page):
+        """PNG of the visible part of the tab, through raw CDP. Not page.screenshot(): Playwright first sets an inline
+        caret-color on every input, textarea and contenteditable (and restores it), changes the page can observe."""
+        self.check_open(page)
+        cdp = await page.context.new_cdp_session(page)
+        try:
+            shot = await cdp.send("Page.captureScreenshot", {"format": "png"})
+        finally:
+            await cdp.detach()
+        return base64.b64decode(shot["data"])
 
     async def settled_markdown(self, page, quiet=1.0, cap=4.0, every=0.25):
         """Page markdown once it stopped changing for `quiet` seconds (cap `cap`).

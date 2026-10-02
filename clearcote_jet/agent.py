@@ -7,7 +7,7 @@ from playwright.async_api import Error as PlaywrightError
 
 from .browser import BrowserClosed, StalePage
 from .model import (MAX_RANKED_BLOCKS, NeedsInput, add_usage, choose, estimate_usd, field_context, field_text,
-                    rank_blocks, resolve_redirects, screen_anchor, split_chunks)
+                    page_view, rank_blocks, resolve, resolve_redirects, screen_anchor, split_chunks)
 from .questions import MAX_SCROLL_STREAK, MAX_STEPS
 
 TOP_BLOCKS = 8
@@ -140,3 +140,40 @@ async def run(session, goal, url=None, page=None, on_step=None):
         ),
         "block_scores": [round(scores[i], 3) for i in sorted(keep)] if scores else [],  # empty: not ranked
     }
+
+
+async def step(session, page, state=None, op=None, target=None, instruction=None, text=None):
+    """One action outside the loop, for a caller taking over a task (the MCP `act` tool).
+
+    By index: `op` + `target` as shown in `state`, the snapshot the caller looked at. No model call; `text` is
+    typed exactly as given. By instruction: the page is observed and the decision model picks one step for
+    `instruction`; a field without `text` gets its value the usual way (from the instruction's own words).
+    A page that changed since `state` raises StalePage and nothing is done: the caller looks again.
+    """
+    if (op is None) == (instruction is None):
+        raise ValueError("give either op (with target) or instruction")
+    usage = {"input_tokens": 0, "output_tokens": 0, "requests": 0}
+    decision = None
+    if op:
+        if state is None:
+            raise ValueError("no snapshot of this tab yet: call snapshot first")
+        _, targets, controls = page_view(state, [])
+        action = resolve(targets, controls, op.upper(), None if target is None else str(target))
+        if action["kind"] == "fill" and text is None:
+            raise ValueError("TYPE_TEXT needs text: the value to type")
+    else:
+        state = await session.observe(page)
+        decision = await choose(state, instruction, [])
+        add_usage(usage, decision["usage"])
+        action = decision["action"]
+        if decision["operation"] in {"DONE", "BLOCKED"}:
+            return {"executed": False, "action": action, "decision": decision, "text": None, "state": state,
+                    "page_changed": False, "usage": usage}
+        if action["kind"] == "fill" and text is None:
+            text, info = await field_text(field_context(instruction, action, state, []))  # NeedsInput propagates
+            if info.get("billed"):
+                add_usage(usage, info.get("usage"))
+    await session.act(page, state, action, text)
+    new_state = await session.observe(page, after=action)
+    return {"executed": True, "action": action, "decision": decision, "text": text, "state": new_state,
+            "page_changed": new_state["marker"] != state["marker"], "usage": usage}

@@ -113,9 +113,20 @@ Flags: `--show-cursor` (draw the mouse), `--keep-open`, `--headless`, `--no-huma
 }
 ```
 
-Your assistant gets `browse(goal, url?, tab_id?)`, which runs a whole task and returns every step plus the page content,
-and `close_tab(tab_id)`. Tabs stay open between calls, several tasks can run at once in their own tabs, and the browser
-shuts itself down after a few idle minutes.
+Your assistant gets four tools:
+
+| Tool | What it does |
+|---|---|
+| `browse(goal, url?, tab_id?)` | runs a whole task and returns every step plus the page content |
+| `snapshot(tab_id?, url?, screenshot?)` | shows a tab exactly as Jet sees it: the numbered element table (`[3] button "Send request"`) and the visible text, optionally with an image |
+| `act(tab_id, op?, target?, instruction?, text?, screenshot?)` | one step by hand: `op` + `target` from the latest snapshot (`CLICK "3"`, `TYPE_TEXT "1"` with `text`, `SELECT "4:2"`, `SCROLL_DOWN`), with no model call; or `instruction` in plain words, one decision |
+| `close_tab(tab_id)` | closes a tab |
+
+When `browse` stops (`blocked`, `needs_input`), the assistant can look with `snapshot`, do a step with `act`, and hand
+back to `browse(goal, tab_id=...)`. `act` returns the new snapshot, so steps chain; if what a step depends on changed
+since the snapshot, it does nothing and answers `stale`. Tabs stay open between calls, several tasks can run at once in
+their own tabs (a second call on a busy tab answers `busy`), and the browser shuts itself down after a few idle minutes.
+Screenshots are taken without touching the page's DOM.
 
 ### Settings
 
@@ -184,6 +195,8 @@ ruff check . && pytest tests -q            # offline: no browser, no model calls
 python tests/e2e/check_browser_layer.py    # visible browser, scripted steps, a local test page
 python tests/e2e/check_full_loop.py        # the whole loop with a stand-in for the model
 python tests/e2e/check_frames.py           # controls inside same-site and cross-site iframes
+python tests/e2e/check_mcp_tools.py        # snapshot and act on a local form (one live step if a key is set)
+python tests/e2e/check_mcp_stdio.py        # the MCP server over stdio, as an assistant runs it
 ```
 
 ## License

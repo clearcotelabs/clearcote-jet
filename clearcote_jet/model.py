@@ -119,8 +119,41 @@ def element_line(e):
     return s
 
 
-async def choose(page, goal, history):
+def page_view(page, history):
+    """What the decision model sees of a page (the request `state`), and the targets and controls its indices name.
+
+    The MCP `snapshot` tool shows the same view, so an index a caller reads there is the index `act` resolves.
+    """
     elements, targets, controls = action_space(page["actions"])
+    view = {
+        "element_format": ELEMENT_FORMAT,
+        "page": {**{k: page[k] for k in ("url", "title", "text")},
+                 **({"scroll": scroll_gauge(page["scroll"])} if page.get("scroll") else {})},
+        "elements": [element_line(e) for e in elements],
+        "recent_actions": [
+            # url/led_to let the model see when it goes round in circles.
+            {k: h[k] for k in ("action", "kind", "text", "page_changed", "url", "led_to") if h.get(k) is not None}
+            for h in history[-10:]
+        ],
+    }
+    return view, targets, controls
+
+
+def resolve(targets, controls, operation, target=None):
+    """An operation (+ target index, as shown in the element table) to the observed action. ValueError names the
+    valid choices, so a caller with a wrong index can correct it without another snapshot."""
+    if operation in targets:
+        if target not in targets[operation]:
+            valid = sorted(targets[operation], key=lambda i: tuple(int(p) for p in i.split(":")))
+            raise ValueError(f"{operation} needs a target, one of: {', '.join(valid)}")
+        return targets[operation][target]
+    if operation in controls:
+        return controls[operation]
+    raise ValueError(f"operation {operation!r} is not offered here; offered: {', '.join([*targets, *controls])}")
+
+
+async def choose(page, goal, history):
+    view, targets, controls = page_view(page, history)
     labels = {
         "CLICK": "Click an element, button, menu option, autocomplete suggestion, or calendar day.",
         "TYPE_TEXT": "Enter or replace text in an editable field. A small LLM will supply the value from the goal.",
@@ -148,21 +181,7 @@ async def choose(page, goal, history):
             "criteria": {index: f"[{index}]" for index in candidates},
             "instructions": {"goal": goal, "operation": operation, "rules": TARGET},
         }
-    body = {
-        "model": os.environ.get("TYPESAFE_MODEL", "jev-latest"),
-        "state": {
-            "element_format": ELEMENT_FORMAT,
-            "page": {**{k: page[k] for k in ("url", "title", "text")},
-                     **({"scroll": scroll_gauge(page["scroll"])} if page.get("scroll") else {})},
-            "elements": [element_line(e) for e in elements],
-            "recent_actions": [
-                # url/led_to let the model see when it goes round in circles.
-                {k: h[k] for k in ("action", "kind", "text", "page_changed", "url", "led_to") if h.get(k) is not None}
-                for h in history[-10:]
-            ],
-        },
-        "questions": questions,
-    }
+    body = {"model": os.environ.get("TYPESAFE_MODEL", "jev-latest"), "state": view, "questions": questions}
     started = time.perf_counter()
     result = await post_json(DECIDE_URL, os.environ["TYPESAFE_API_KEY"], body)
     operation_answer = validate_choice(result["answers"].get("operation", {}), operations)
@@ -173,7 +192,7 @@ async def choose(page, goal, history):
         target_answer = validate_choice(result["answers"].get(operation.lower() + "_target", {}), targets[operation])
         target = target_answer["choice"]
         target_probabilities = target_answer["probabilities"]
-        action = targets[operation][target]
+        action = resolve(targets, controls, operation, target)
         probability = target_answer["probabilities"][target]
     else:
         action = controls.get(operation) or {"id": operation, "kind": operation.lower(), "label": operation}
