@@ -8,6 +8,7 @@ in the decision API's response shape, so a wrong request (e.g. a missing target 
 import asyncio
 import shutil
 import sys
+import re
 import tempfile
 from pathlib import Path
 
@@ -23,6 +24,16 @@ requests = []
 
 def dist(keys, pick):
     return {k: (1.0 if k == pick else 0.0) for k in keys}
+
+
+def target_text(body, ident):
+    """What a target index stands for, read the way the model reads it: its line in `elements`, or its option."""
+    index, _, option = ident.partition(":")
+    line = next((e for e in body["state"]["elements"] if e.startswith(f"[{index}] ")), "")
+    if option:
+        found = re.search(rf"{re.escape(ident)} ([^;]*)", line)
+        return found.group(1) if found else ""
+    return line
 
 
 async def fake_post(url, key, body, headers=None):
@@ -42,7 +53,7 @@ async def fake_post(url, key, body, headers=None):
         if name == "operation":
             continue
         ids = list(q["criteria"])
-        hit = next((i for i, text in q["criteria"].items() if label and label in text), ids[0])
+        hit = next((i for i in ids if label and label in target_text(body, i)), ids[0])
         answers[name] = {"choice": hit, "confidence": 0.9, "probabilities": dist(ids, hit)}
     return {"answers": answers}
 

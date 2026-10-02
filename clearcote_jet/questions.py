@@ -44,3 +44,6 @@ a search query without "Search for". A value that recent_actions show was alread
 to that field. Choose NONE if the goal contains no value for this field."""
 
 MAX_STEPS = 60
+# Scrolling this many times in a row ends the run as blocked: a goal reached by scrolling is reached long before, and
+# without a stop a long document can use every remaining step (each one a full decision request).
+MAX_SCROLL_STREAK = 12

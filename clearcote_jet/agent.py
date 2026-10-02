@@ -6,9 +6,9 @@ import time
 from playwright.async_api import Error as PlaywrightError
 
 from .browser import BrowserClosed, StalePage
-from .model import (NeedsInput, add_usage, choose, estimate_usd, field_context, field_text, rank_blocks,
-                    resolve_redirects, split_chunks)
-from .questions import MAX_STEPS
+from .model import (MAX_RANKED_BLOCKS, NeedsInput, add_usage, choose, estimate_usd, field_context, field_text,
+                    rank_blocks, resolve_redirects, screen_anchor, split_chunks)
+from .questions import MAX_SCROLL_STREAK, MAX_STEPS
 
 TOP_BLOCKS = 8
 
@@ -23,7 +23,7 @@ async def run(session, goal, url=None, page=None, on_step=None):
     decide_usage = {"input_tokens": 0, "output_tokens": 0, "requests": 0}
     text_usage = {"input_tokens": 0, "output_tokens": 0, "requests": 0}
     history, decisions, text_calls, pending_text, stale = [], 0, 0, None, []
-    status, detail = "blocked", None
+    status, detail, verdict, window, scores = "blocked", None, None, [], []
     try:
         state = await session.observe(page)
         while True:
@@ -36,18 +36,25 @@ async def run(session, goal, url=None, page=None, on_step=None):
             add_usage(decide_usage, decision["usage"])
             action, operation = decision["action"], decision["operation"]
             if operation in {"DONE", "BLOCKED"}:
-                if not await session.fresh(page, state):
+                # The same verdict twice in a row on the same URL stands even if the page is still changing (late
+                # widgets, live counters): deciding again would cost another full request for the same answer.
+                if verdict != (operation, state["url"]) and not await session.fresh(page, state):
+                    verdict = (operation, state["url"])
                     stale.append(f"{ms()}ms {operation}: page changed before completion"
                                  f" [{getattr(session, 'last_diff', '')}]")  # what changed
                     state = await session.observe(page)
                     continue
                 status = operation.lower()
                 break
+            verdict = None
             text = text_info = None
             try:
                 if action["kind"] == "fill":
                     context = field_context(goal, action, state, history)
-                    if pending_text and pending_text[0] == context:
+                    # The value comes from the goal, the field and the steps so far, not from the rest of the page:
+                    # when the step is decided again because the page changed (a field that opened), reuse it.
+                    key = {k: v for k, v in context.items() if k != "page"}
+                    if pending_text and pending_text[0] == key:
                         text, text_info = pending_text[1], pending_text[2]
                     else:
                         text, text_info = await field_text(context)
@@ -55,7 +62,7 @@ async def run(session, goal, url=None, page=None, on_step=None):
                         timing["value_ms"] += text_info["latency_ms"]
                         add_usage(decide_usage if text_info.get("billed") else text_usage,
                                   text_info.get("usage"))
-                        pending_text = (context, text, text_info)
+                        pending_text = (key, text, text_info)
                 await session.act(page, state, action, text)
             except NeedsInput as e:
                 status, detail = "needs_input", f"No value in the goal for field: {e}"
@@ -91,10 +98,18 @@ async def run(session, goal, url=None, page=None, on_step=None):
             if len(last) == 3 and all(not h["page_changed"] and h["kind"] != "wait" for h in last):
                 status, detail = "blocked", "Three actions in a row did not change the page."
                 break
+            if len(history) >= MAX_SCROLL_STREAK and all(h["kind"] == "scroll" for h in history[-MAX_SCROLL_STREAK:]):
+                status, detail = "blocked", f"Scrolled {MAX_SCROLL_STREAK} times in a row without finding the goal."
+                break
         elapsed = ms()
         chunks = split_chunks(await session.settled_markdown(page))
-        scores, rank_usage = await rank_blocks(goal, chunks)
-        add_usage(decide_usage, rank_usage)
+        # The answer is where the run ended: rank the blocks around the final screen. A run that did not finish has
+        # no answer to rank, so it returns what was on screen without a ranking request.
+        start = screen_anchor(chunks, state["text"])
+        window = chunks[start:start + MAX_RANKED_BLOCKS]
+        if status == "done":
+            scores, rank_usage = await rank_blocks(goal, window)
+            add_usage(decide_usage, rank_usage)
         title = await page.title()
     except (BrowserClosed, PlaywrightError, StalePage) as e:
         # The user (or something else) closed the browser or the tab mid-task: report it, keep the trace.
@@ -102,9 +117,9 @@ async def run(session, goal, url=None, page=None, on_step=None):
             raise
         what = "browser was closed" if session.closed else "tab was closed or crashed"
         status, detail = "error", f"the {what} during the task ({type(e).__name__})"
-        elapsed, chunks, scores, title = ms(), [], [], ""
+        elapsed, window, scores, title = ms(), [], [], ""
     ranked = sorted(range(len(scores)), key=lambda i: -scores[i])
-    keep = [i for i in ranked if scores[i] >= 0.5][:TOP_BLOCKS] or ranked[:3]
+    keep = [i for i in ranked if scores[i] >= 0.5][:TOP_BLOCKS] or ranked[:3] or list(range(min(3, len(window))))
     return {
         "status": status,
         "detail": detail,
@@ -120,8 +135,8 @@ async def run(session, goal, url=None, page=None, on_step=None):
         "stale": stale,
         "trace": history,
         "markdown": await resolve_redirects(
-            "\n\n".join(chunks[i] for i in sorted(keep)),
+            "\n\n".join(window[i] for i in sorted(keep)),
             page.context.request if session.direct and not session.is_gone(page) else None,
         ),
-        "block_scores": [round(scores[i], 3) for i in sorted(keep)],
+        "block_scores": [round(scores[i], 3) for i in sorted(keep)] if scores else [],  # empty: not ranked
     }

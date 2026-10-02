@@ -11,7 +11,7 @@ Jet did, how sure it was, and how long it took to decide. [Watch the MP4](docs/d
 ## Why use it
 
 - **Fast.** Each decision took 235 to 473 ms in our runs. Most of a run is the browser, not the thinking.
-- **Cheap.** A finished task averaged 22,394 input tokens: about **$0.0009, or $0.94 per 1,000 tasks**.
+- **Cheap.** A finished task averaged 17,746 input tokens: about **$0.0007, or $0.75 per 1,000 tasks**.
 - **You can see why.** Every step comes with the probability behind it and the options it passed over, so a shaky
   step stands out.
 - **It uses the page like a person.** Curved mouse paths, key-by-key typing, dropdowns picked from the open list, and
@@ -42,7 +42,8 @@ Live, in a visible Clearcote window, 29 September 2026:
 | RFC 9110: jump to the section on 404 Not Found | stopped at the 60-step cap | 60 | 60 | 92.3 s | 368,958 | $0.0155 |
 
 The last row is a failure we kept on purpose: on a very long document it scrolled instead of using the table of
-contents. The step cap is what bounds a run like that.
+contents. Jet now stops after 12 scrolls in a row, which ends a run like that at about 49,000 input tokens ($0.002)
+instead of at the step cap.
 
 A GOV.UK run, step by step:
 
@@ -58,8 +59,9 @@ done · 4 actions · 5 decisions · 14.8 s · 13,654 input tokens ≈ $0.0006
 
 - **Decision model:** $0.042 per million input tokens; output tokens are free. That is the published rate on
   29 September 2026; set `CLEARCOTE_JET_USD_PER_MTOK` if yours differs.
-- **Measured:** 13,654 to 30,505 input tokens per finished task, so $0.0006 to $0.0013. Our worst case, the 60-step
-  runaway above, cost $0.0155.
+- **Measured** (seven everyday tasks, three runs each, 2 October 2026): 10,232 to 29,623 input tokens per finished
+  task, so $0.0004 to $0.0012, and 26% fewer than the previous version on the same tasks. A long-page scroll now stops
+  after 12 scrolls, at about 49,000 tokens ($0.002).
 - **Your own runs:** every result carries `usage` (tokens, requests, `estimated_usd`), and
   `python examples/estimate_cost.py` totals everything in `runs/` and projects the cost per 1,000 tasks.
 - **Not included:** your [Clearcote](https://clearcotelabs.com) licence, and an optional text model, which bills with its
@@ -136,11 +138,11 @@ Put them in `.env` (see `.env.example`) or the environment:
 
 | Field | Meaning |
 |---|---|
-| `status` | `done`, `blocked` (nothing on the page can move it forward), `needs_input` (the goal lacks a value a field needs), `budget` (hit the step cap) or `error` |
+| `status` | `done`, `blocked` (nothing on the page can move it forward, or it scrolled 12 times in a row), `needs_input` (the goal lacks a value a field needs), `budget` (hit the step cap) or `error` |
 | `trace` | every step: what was done, the text typed, its probability, the runner-up options and how long the decision took |
 | `stale` | steps that were decided again because the page changed before Jet could act |
 | `usage` | decision-model tokens and requests, `estimated_usd`, and any text-model tokens |
-| `markdown` | the parts of the final page that answer the goal |
+| `markdown` | the parts of the final page that answer the goal; for a run that did not finish, what was on screen |
 
 ## How it works
 
@@ -150,7 +152,8 @@ Put them in `.env` (see `.env.example`) or the environment:
    every option. The model only chooses from that list; it never writes code or coordinates.
 3. **Act.** Jet checks that the page has not changed, then moves the mouse along a curved path, clicks, and types key by
    key. Page reads run in a separate, isolated context, so the page's own scripts don't see them.
-4. **Answer.** When the goal is met, the page is turned into markdown and scored section by section against the goal.
+4. **Answer.** When the goal is met, the page is turned into markdown, and the sections around where the run ended are
+   scored against the goal.
 
 ## Examples
 
@@ -164,7 +167,8 @@ Put them in `.env` (see `.env.example`) or the environment:
 
 ## Known limits
 
-- On very long pages it may scroll rather than jump through a table of contents (see the RFC run above).
+- On very long pages it may scroll rather than jump through a table of contents (see the RFC run above). It stops
+  after 12 scrolls in a row and reports `blocked`.
 - Links that open a new tab are not followed, and closed shadow roots, canvas apps, file uploads and CAPTCHAs are not
   handled. Controls inside iframes are; scrolling inside an iframe is not.
 - `done` is the model's judgement. Check what matters.

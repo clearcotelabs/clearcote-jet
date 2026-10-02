@@ -18,7 +18,9 @@ DECIDE_URL = "https://api.typesafe.ai/v1/systemone"
 # The decision model charges for input tokens only (published rate, 29 September 2026). Override with
 # CLEARCOTE_JET_USD_PER_MTOK if your plan differs; it only affects the estimate printed with a result.
 USD_PER_MILLION_INPUT_TOKENS = 0.042
-MAX_RANKED_BLOCKS = 30
+# The final ranking scores this many blocks, starting just above what is on screen when the run ends (see
+# screen_anchor). A/B 2026-10-02: 55% fewer ranking tokens than the first 30 blocks, the answer kept in every run.
+MAX_RANKED_BLOCKS = 12
 
 
 class NeedsInput(Exception):
@@ -134,13 +136,16 @@ async def choose(page, goal, history):
     # Compact request (A/B 2026-09-29: ~30% fewer tokens, same decisions). The full NEXT_ACTION rules go
     # once, inline in the operation question: rules moved into `state` and only referenced lost their effect.
     # Target questions drop the repeated rules and point to `elements` for per-index details.
+    # Their criteria are bare indices: the labels are in `elements` already (A/B 2026-10-02: 6.6% fewer tokens per
+    # decision, the same choices). The page text stays whole: dropping the lines that repeat a label saved 4.5% but
+    # changed a navigation choice the full text gets right.
     questions = {
         "operation": {"type": "choice", "criteria": operations, "instructions": {"goal": goal, "rules": NEXT_ACTION}}
     }
     for operation, candidates in targets.items():
         questions[operation.lower() + "_target"] = {
             "type": "choice",
-            "criteria": {index: f"[{index}] {a['label']}" for index, a in candidates.items()},
+            "criteria": {index: f"[{index}]" for index in candidates},
             "instructions": {"goal": goal, "operation": operation, "rules": TARGET},
         }
     body = {
@@ -329,6 +334,19 @@ async def resolve_redirects(markdown, request=None):
     for url, real in zip(urls, await asyncio.gather(*(_resolve_redirect(u, request) for u in urls))):
         markdown = markdown.replace(f"({url})", f"({real})")
     return markdown
+
+
+def screen_anchor(blocks, visible_text):
+    """Where to start ranking: two blocks above the first block that holds text on screen at the end of the run.
+
+    A finished run usually ends where the answer is (a result page, a section reached by its anchor), which on a long
+    page can be far below its first blocks. 0 when no on-screen line is found in the markdown.
+    """
+    lines = [line.strip()[:30] for line in visible_text.split("\n") if len(line.strip()) >= 20][:8]
+    for i, block in enumerate(blocks):
+        if any(line in block for line in lines):
+            return max(0, i - 2)
+    return 0
 
 
 async def rank_blocks(goal, blocks):

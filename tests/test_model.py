@@ -120,13 +120,18 @@ def test_choose_request_is_compact(monkeypatch):
             "type_text_target": {"choice": "1", "confidence": 1.0, "probabilities": {"1": 1.0}},
             "select_target": {"choice": "3:1", "confidence": 1.0, "probabilities": {"3:1": 1.0}}}}
     monkeypatch.setattr(model, "post_json", post)
-    page = {"url": "u", "title": "t", "text": "", "actions": ACTIONS}
+    page = {"url": "u", "title": "t", "text": "Search the catalogue\nAvailable now\n12 copies in the system",
+            "actions": ACTIONS}
     asyncio.run(model.choose(page, "goal", []))
     body = json.dumps(post.body)
     assert body.count(json.dumps(model.NEXT_ACTION)) == 1  # full rules sent once, in the operation question
     # target questions get their own short element-choice rules (without them: Accept instead of Reject)
     assert "reject/decline" in post.body["questions"]["click_target"]["instructions"]["rules"]
-    assert post.body["questions"]["click_target"]["criteria"]["2"] == "[2] Available now"
+    # target criteria are bare indices: each label is sent once, in `elements`
+    assert post.body["questions"]["click_target"]["criteria"] == {"1": "[1]", "2": "[2]"}
+    assert post.body["questions"]["select_target"]["criteria"] == {"3:1": "[3:1]"}
+    # the page text goes whole, label lines included: they give the model the page's layout
+    assert post.body["state"]["page"]["text"] == page["text"]
     # elements as one line each, explained by the legend
     assert post.body["state"]["element_format"] == model.ELEMENT_FORMAT
     assert post.body["state"]["elements"] == [
@@ -315,3 +320,11 @@ def test_rank_blocks_returns_scores_and_usage(monkeypatch):
     scores, usage = asyncio.run(model.rank_blocks("goal", ["a", "b", "c"]))
     assert scores == [0.0, 0.1, 0.2] and usage == {"input_tokens": 900}
     assert asyncio.run(model.rank_blocks("goal", [])) == ([], {})
+
+
+def test_screen_anchor_starts_two_blocks_above_the_final_screen():
+    blocks = [f"## Section {i}\n\nBody text of section number {i} goes here." for i in range(20)]
+    assert model.screen_anchor(blocks, "Body text of section number 15 goes here.\nshort") == 13
+    assert model.screen_anchor(blocks, "Body text of section number 1 goes here.") == 0  # clamped at the top
+    assert model.screen_anchor(blocks, "Nothing from this markdown is on screen") == 0
+    assert model.screen_anchor(blocks, "") == 0
