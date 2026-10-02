@@ -145,6 +145,9 @@
   actions.forEach((a,i)=>a.id='e'+(i+1));
   if (scrollY+innerHeight<height-2) actions.push({id:'scroll_down',kind:'scroll',label:'Scroll down',delta:560});
   if (scrollY>0) actions.push({id:'scroll_up',kind:'scroll',label:'Scroll up',delta:-560});
+  // A long page (over four screens) also offers a jump to words from the goal, instead of scrolling screen by screen.
+  if (height>innerHeight*4) actions.push({id:'find_text',kind:'find',
+    label:'Jump to words from the goal on this long page (a section, heading or item further away)'});
   actions.push({id:'wait',kind:'wait',label:'Wait for the page to update'});
   return {url:location.href,title:document.title,ready:document.readyState,text,scroll:{y:scrollY,height,vh:innerHeight},
     actions,marker:JSON.stringify(marker),page_key:JSON.stringify(page_key),guards,omitted_actions};

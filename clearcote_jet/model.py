@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
-from .questions import ELEMENT_FORMAT, GOAL_VALUE, NEXT_ACTION, TARGET, TEXT_VALUE
+from .questions import ELEMENT_FORMAT, GOAL_FIND, GOAL_VALUE, NEXT_ACTION, TARGET, TEXT_VALUE
 
 CLIENT = httpx.AsyncClient(timeout=60)
 DECIDE_URL = "https://api.typesafe.ai/v1/systemone"
@@ -217,9 +217,12 @@ async def choose(page, goal, history):
 
 
 def field_context(goal, action, page, history):
+    field = {k: action.get(k) for k in ("label", "role", "value")}
+    if action.get("kind") == "find":
+        field["purpose"] = "words to look for on this page, not text to type"
     return {
         "goal": goal,
-        "field": {k: action.get(k) for k in ("label", "role", "value")},
+        "field": field,
         "page": {"title": page["title"], "text": page["text"][:6000]},
         "recent_actions": [{k: h.get(k) for k in ("action", "text")} for h in history[-6:]],
     }
@@ -251,7 +254,8 @@ async def field_text_from_goal(context):
         "model": os.environ.get("TYPESAFE_MODEL", "jev-latest"),
         "state": context,
         "questions": {"value": {"type": "choice", "criteria": criteria,
-                                "instructions": {"field": context["field"]["label"], "rules": GOAL_VALUE}}},
+                                "instructions": {"field": context["field"]["label"],
+                                                 "rules": GOAL_FIND if context["field"].get("purpose") else GOAL_VALUE}}},
     }
     started = time.perf_counter()
     result = await post_json(DECIDE_URL, os.environ["TYPESAFE_API_KEY"], body)

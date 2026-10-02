@@ -15,7 +15,8 @@ a matching link is not enough. BLOCKED means no supported operation can make pro
 moves repeat a path that recent_actions (url → led_to) show was already followed and came back without
 reaching the goal. Never follow the same path a second time: choose BLOCKED instead.
 The page shows only the current screen: if the control you need is not in view and `page.scroll` shows more below,
-SCROLL_DOWN to find it before choosing BLOCKED.
+SCROLL_DOWN to find it before choosing BLOCKED. If FIND_TEXT is offered and the goal names a section, heading or
+item that is not on this screen, use FIND_TEXT to jump there rather than scrolling to it.
 A cookie-consent wall, overlay, or dialog in any language that stands between the page and the goal
 is progress to clear, not a block: CLICK its reject/decline or close button (accept only if there is none)."""
 
@@ -42,6 +43,10 @@ GOAL_VALUE = """Choose the exact text from the goal to type into the selected fi
 and current value). Choose the complete value this field needs and nothing more: a city name without "from"/"to",
 a search query without "Search for". A value that recent_actions show was already typed into another field belongs
 to that field. Choose NONE if the goal contains no value for this field."""
+
+GOAL_FIND = """Choose the exact words from the goal to look for on this long page: the name of the section, heading or
+item the goal wants to reach ("404 Not Found", not "the section that defines 404 Not Found"). Choose NONE if the goal
+names no such place."""
 
 MAX_STEPS = 60
 # Scrolling this many times in a row ends the run as blocked: a goal reached by scrolling is reached long before, and

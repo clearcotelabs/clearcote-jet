@@ -11,7 +11,10 @@ Jet did, how sure it was, and how long it took to decide. [Watch the MP4](docs/d
 ## Why use it
 
 - **Fast.** Each decision took 235 to 473 ms in our runs. Most of a run is the browser, not the thinking.
-- **Cheap.** A finished task averaged 17,746 input tokens: about **$0.0007, or $0.75 per 1,000 tasks**.
+- **Cheap.** A finished task averaged 17,973 input tokens: about **$0.0008, or $0.76 per 1,000 tasks**.
+- **Learned once, then free.** A task that worked is saved as a skill: the same goal from the same page then runs
+  again with **no model calls** (24 of 24 replays in our runs), and where the page has changed, the agent takes over for
+  that part and saves it again.
 - **You can see why.** Every step comes with the probability behind it and the options it passed over, so a shaky
   step stands out.
 - **It uses the page like a person.** Curved mouse paths, key-by-key typing, dropdowns picked from the open list, and
@@ -42,8 +45,9 @@ Live, in a visible Clearcote window, 29 September 2026:
 | RFC 9110: jump to the section on 404 Not Found | stopped at the 60-step cap | 60 | 60 | 92.3 s | 368,958 | $0.0155 |
 
 The last row is a failure we kept on purpose: on a very long document it scrolled instead of using the table of
-contents. Jet now stops after 12 scrolls in a row, which ends a run like that at about 49,000 input tokens ($0.002)
-instead of at the step cap.
+contents. Jet now jumps to a section the goal names: on the same page it goes straight to "404 Not Found" in one step
+(13,793 input tokens, $0.0006, in 3 of 3 runs on 2 October 2026). For a goal that names no place it still scrolls, and
+stops after 12 scrolls in a row.
 
 A GOV.UK run, step by step:
 
@@ -59,13 +63,42 @@ done · 4 actions · 5 decisions · 14.8 s · 13,654 input tokens ≈ $0.0006
 
 - **Decision model:** $0.042 per million input tokens; output tokens are free. That is the published rate on
   29 September 2026; set `CLEARCOTE_JET_USD_PER_MTOK` if yours differs.
-- **Measured** (seven everyday tasks, three runs each, 2 October 2026): 10,232 to 29,623 input tokens per finished
-  task, so $0.0004 to $0.0012, and 26% fewer than the previous version on the same tasks. A long-page scroll now stops
-  after 12 scrolls, at about 49,000 tokens ($0.002).
-- **Your own runs:** every result carries `usage` (tokens, requests, `estimated_usd`), and
-  `python examples/estimate_cost.py` totals everything in `runs/` and projects the cost per 1,000 tasks.
+- **Measured** (seven everyday tasks, three runs each, 2 October 2026): 10,372 to 30,031 input tokens per finished
+  task, so $0.0004 to $0.0013, about a quarter fewer than before that day's request trimming. **A replayed skill: 0.**
 - **Not included:** your [Clearcote](https://clearcotelabs.com) licence, and an optional text model, which bills with its
   own provider.
+- **Your own runs:** every result carries `usage` (tokens, requests, `estimated_usd`), and
+  `python examples/estimate_cost.py` totals everything in `runs/` and projects the cost per 1,000 tasks.
+
+## Learned once, replayed for free
+
+The first time a goal finishes from a start page, Jet saves how it did it as a **skill**: each step with how to find its
+control again (role, label, and its place among controls labelled alike; numbers in a label may change, so "87
+comments" is found again as "213 comments"), how the run ended, and how the page's list of results is read. The next
+time the same goal is run from the same page, Jet replays the skill with **no model calls**. A cookie banner that
+doesn't show again is skipped. If the page has changed (a button renamed, a step that is gone, an ending that doesn't
+match), the agent takes over from that point, decides only what changed, and saves the skill again.
+
+If the results came from a JSON request, the skill keeps that request too, and a replay reads the rows with it from
+inside the page, without clicking at all.
+
+| 2 October 2026, 8 tasks × 3 runs | Worked out step by step | Replayed |
+|---|---|---|
+| Passed | 21 of 24 | 24 of 24 |
+| Model requests per task | 5.6 | 0 |
+| Input tokens per task | 17,450 | 0 |
+
+Replays are not much faster: most of a run is the browser and its human-paced input, not the model.
+
+Skills are JSON files in `~/.clearcote-jet/skills` (`CLEARCOTE_JET_SKILLS`). On the command line, `--no-skill` works a
+task out step by step and saves nothing; over MCP, `browse(..., reuse=False)` does the same, and `list_skills` /
+`forget_skill` manage them. A skill is for one goal from one page: another search term is another skill.
+
+## Results without a model
+
+When a run finishes on a page with a list of results (search hits, products, listings), `items` holds its rows, read
+from the page's layout with no model: a title, a link, a price (the sale price, not a struck-out one) and an image,
+each found with a selector that works for most rows. The navigation, header and footer are left out.
 
 ## Use it
 
@@ -98,7 +131,8 @@ clearcote-jet browser --port 9222
 clearcote-jet run --cdp http://127.0.0.1:9222 --url https://news.ycombinator.com/ --goal "Open the top story's comments"
 ```
 
-Flags: `--show-cursor` (draw the mouse), `--keep-open`, `--headless`, `--no-humanize`, `--profile DIR`.
+Flags: `--show-cursor` (draw the mouse), `--keep-open`, `--headless`, `--no-humanize`, `--profile DIR`,
+`--confirm` (stop before a click that can't be taken back), `--no-skill` (don't learn or replay; see below).
 
 ### As a tool for your AI assistant (MCP)
 
@@ -113,13 +147,14 @@ Flags: `--show-cursor` (draw the mouse), `--keep-open`, `--headless`, `--no-huma
 }
 ```
 
-Your assistant gets four tools:
+Your assistant gets these tools:
 
 | Tool | What it does |
 |---|---|
-| `browse(goal, url?, tab_id?)` | runs a whole task and returns every step plus the page content |
+| `browse(goal, url?, tab_id?, confirm?, reuse?)` | runs a whole task and returns every step, the rows of any list of results, and the page content. A task started from a `url` is learned once and replayed with no model after (`reuse=False` turns that off); `confirm=True` stops before any click that can't be taken back and says which `act` call goes ahead |
 | `snapshot(tab_id?, url?, screenshot?)` | shows a tab exactly as Jet sees it: the numbered element table (`[3] button "Send request"`) and the visible text, optionally with an image |
-| `act(tab_id, op?, target?, instruction?, text?, screenshot?)` | one step by hand: `op` + `target` from the latest snapshot (`CLICK "3"`, `TYPE_TEXT "1"` with `text`, `SELECT "4:2"`, `SCROLL_DOWN`), with no model call; or `instruction` in plain words, one decision |
+| `act(tab_id, op?, target?, instruction?, text?, screenshot?)` | one step by hand: `op` + `target` from the latest snapshot (`CLICK "3"`, `TYPE_TEXT "1"` with `text`, `SELECT "4:2"`, `SCROLL_DOWN`, `FIND_TEXT` with `text`), with no model call; or `instruction` in plain words, one decision |
+| `list_skills()`, `forget_skill(goal, url)` | the tasks it has learned; forget one so it is worked out again |
 | `close_tab(tab_id)` | closes a tab |
 
 When `browse` stops (`blocked`, `needs_input`), the assistant can look with `snapshot`, do a step with `act`, and hand
@@ -143,17 +178,21 @@ Put them in `.env` (see `.env.example`) or the environment:
 | `CLEARCOTE_JET_HUMANIZE` | on | `0` switches to instant clicks and typing |
 | `CLEARCOTE_JET_CDP` | unset | attach to a browser that is already running |
 | `CLEARCOTE_JET_IDLE_MINUTES` | `5` | MCP server: close the browser after this long without calls |
+| `CLEARCOTE_JET_SKILLS` | `~/.clearcote-jet/skills` | where learned tasks are kept, one JSON file each |
 | `CLEARCOTE_JET_USD_PER_MTOK` | `0.042` | rate used for the cost estimate |
 
 ## Reading a result
 
 | Field | Meaning |
 |---|---|
-| `status` | `done`, `blocked` (nothing on the page can move it forward, or it scrolled 12 times in a row), `needs_input` (the goal lacks a value a field needs), `budget` (hit the step cap) or `error` |
-| `trace` | every step: what was done, the text typed, its probability, the runner-up options and how long the decision took |
+| `status` | `done`, `blocked` (nothing on the page can move it forward, or it scrolled 12 times in a row), `needs_input` (the goal lacks a value a field needs), `needs_confirmation` (with `confirm`: the next click can't be taken back), `budget` (hit the step cap) or `error` |
+| `trace` | every step: what was done, the text typed, its probability, the runner-up options and how long the decision took (replayed steps are marked `replayed`) |
 | `stale` | steps that were decided again because the page changed before Jet could act |
 | `usage` | decision-model tokens and requests, `estimated_usd`, and any text-model tokens |
 | `markdown` | the parts of the final page that answer the goal; for a run that did not finish, what was on screen |
+| `items` | the rows of the final page's list of results (title, link, price, image), read without a model; empty if there is none |
+| `skill` | with skills: `learned`, `replayed`, `shortcut` (the rows came straight from the request behind the list) or `repaired` |
+| `pending` | with `confirm`: the click it stopped before |
 
 ## How it works
 
@@ -162,9 +201,11 @@ Put them in `.env` (see `.env.example`) or the environment:
 2. **Decide.** One request to the decision model picks the kind of step and the control together, with a probability for
    every option. The model only chooses from that list; it never writes code or coordinates.
 3. **Act.** Jet checks that the page has not changed, then moves the mouse along a curved path, clicks, and types key by
-   key. Page reads run in a separate, isolated context, so the page's own scripts don't see them.
+   key. Page reads run in a separate, isolated context, so the page's own scripts don't see them. On a long page it can
+   also jump to words from your goal, through the page's own anchor when there is one.
 4. **Answer.** When the goal is met, the page is turned into markdown, and the sections around where the run ended are
-   scored against the goal.
+   scored against the goal. A list of results on the page is read row by row, from its layout, with no model.
+5. **Remember.** A finished task is saved as a skill (see below), so the next run of it needs no model.
 
 ## Examples
 
@@ -178,8 +219,8 @@ Put them in `.env` (see `.env.example`) or the environment:
 
 ## Known limits
 
-- On very long pages it may scroll rather than jump through a table of contents (see the RFC run above). It stops
-  after 12 scrolls in a row and reports `blocked`.
+- On a long page it jumps to a section the goal names; when the goal names none, it may scroll rather than use a table
+  of contents, and stops after 12 scrolls in a row with `blocked`.
 - Links that open a new tab are not followed, and closed shadow roots, canvas apps, file uploads and CAPTCHAs are not
   handled. Controls inside iframes are; scrolling inside an iframe is not.
 - `done` is the model's judgement. Check what matters.
@@ -197,6 +238,7 @@ python tests/e2e/check_full_loop.py        # the whole loop with a stand-in for 
 python tests/e2e/check_frames.py           # controls inside same-site and cross-site iframes
 python tests/e2e/check_mcp_tools.py        # snapshot and act on a local form (one live step if a key is set)
 python tests/e2e/check_mcp_stdio.py        # the MCP server over stdio, as an assistant runs it
+python tests/e2e/check_skills.py           # learn, replay, repair, lists, the request shortcut, confirm and find
 ```
 
 ## License

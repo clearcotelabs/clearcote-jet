@@ -6,15 +6,25 @@ import time
 from playwright.async_api import Error as PlaywrightError
 
 from .browser import BrowserClosed, StalePage
+from .describe import best_list, end_lines, irreversible, target_info
 from .model import (MAX_RANKED_BLOCKS, NeedsInput, add_usage, choose, estimate_usd, field_context, field_text,
                     page_view, rank_blocks, resolve, resolve_redirects, screen_anchor, split_chunks)
 from .questions import MAX_SCROLL_STREAK, MAX_STEPS
+from .shortcut import find_shortcut
 
 TOP_BLOCKS = 8
 
 
-async def run(session, goal, url=None, page=None, on_step=None):
-    """Run one goal in a tab. Returns a result dict; the tab is left open for the caller to close."""
+async def run(session, goal, url=None, page=None, on_step=None, history=None, confirm=False, learn=False):
+    """Run one goal in a tab. Returns a result dict; the tab is left open for the caller to close.
+
+    history: steps already done in this tab (a replayed skill that lost its way), so the loop carries on from them.
+    confirm: stop before a click that can't be taken back (send, buy, book, delete...), with status
+        needs_confirmation and the click in `pending`; nothing is clicked.
+    learn: also note what a skill needs: how the run ended, how the results list is read, and the JSON request
+        behind the list if there is one (result["learned"]).
+    A finished run carries `items`: the rows of the page's list of results, read without a model (empty if none).
+    """
     page = page or await session.new_tab(url)
     started = time.perf_counter()
     ms = lambda: round((time.perf_counter() - started) * 1000)  # noqa: E731
@@ -22,10 +32,13 @@ async def run(session, goal, url=None, page=None, on_step=None):
     # What this run costs: the decision model bills input tokens; a text model, if used, bills separately.
     decide_usage = {"input_tokens": 0, "output_tokens": 0, "requests": 0}
     text_usage = {"input_tokens": 0, "output_tokens": 0, "requests": 0}
-    history, decisions, text_calls, pending_text, stale = [], 0, 0, None, []
+    history, decisions, text_calls, pending_text, stale = list(history or []), 0, 0, None, []
     status, detail, verdict, window, scores = "blocked", None, None, [], []
+    items, learned, pending = [], None, None
+    capture = session.capture_json(page) if learn else None
     try:
         state = await session.observe(page)
+        first_text = state["text"]
         while True:
             if decisions >= MAX_STEPS * 2 or len(history) >= MAX_STEPS:
                 status, detail = "budget", f"{len(history)} actions / {decisions} decisions"
@@ -47,9 +60,14 @@ async def run(session, goal, url=None, page=None, on_step=None):
                 status = operation.lower()
                 break
             verdict = None
+            if confirm and irreversible(action):
+                status, pending = "needs_confirmation", {"kind": action["kind"], "label": action["label"],
+                                                         "role": action.get("role")}
+                detail = f"stopped before {action['label'][:80]!r}, which can't be taken back: confirm to go ahead"
+                break
             text = text_info = None
             try:
-                if action["kind"] == "fill":
+                if action["kind"] in ("fill", "find"):
                     context = field_context(goal, action, state, history)
                     # The value comes from the goal, the field and the steps so far, not from the rest of the page:
                     # when the step is decided again because the page changed (a field that opened), reuse it.
@@ -65,8 +83,11 @@ async def run(session, goal, url=None, page=None, on_step=None):
                         pending_text = (key, text, text_info)
                 await session.act(page, state, action, text)
             except NeedsInput as e:
-                status, detail = "needs_input", f"No value in the goal for field: {e}"
-                break
+                if action["kind"] == "find":  # the goal names no place to jump to: nothing happens, the loop sees that
+                    pending_text, text = None, None
+                else:
+                    status, detail = "needs_input", f"No value in the goal for field: {e}"
+                    break
             except StalePage as e:
                 stale.append(f"{ms()}ms {action['kind']} {action['label'][:40]!r}: {e}"
                              f" [{getattr(session, 'last_diff', '')}]")  # what changed
@@ -87,6 +108,7 @@ async def run(session, goal, url=None, page=None, on_step=None):
                 "decide_ms": decision["latency_ms"],
                 "at_ms": ms(),
                 "url": state["url"],  # where the action happened; with led_to, the model can see navigation circles
+                "target": target_info(action, state["actions"]),  # how a skill finds this control again
             })
             new_state = await session.observe(page, after=action)
             history[-1]["page_changed"] = new_state["marker"] != state["marker"]
@@ -111,6 +133,14 @@ async def run(session, goal, url=None, page=None, on_step=None):
             scores, rank_usage = await rank_blocks(goal, window)
             add_usage(decide_usage, rank_usage)
         title = await page.title()
+        if status == "done":
+            found = best_list(await session.lists(page))  # the page's list of results, read with no model
+            items = found["rows"] if found else []
+            if learn:
+                captured = await capture.stop()
+                learned = {"end": {"url": page.url, "title": title, "lines": end_lines(first_text, state["text"])},
+                           "list": {"item": found["item"], "fields": found["fields"]} if found else None,
+                           "shortcut": find_shortcut(captured, found["rows"], page.url) if found else None}
     except (BrowserClosed, PlaywrightError, StalePage) as e:
         # The user (or something else) closed the browser or the tab mid-task: report it, keep the trace.
         if not session.is_gone(page):
@@ -118,6 +148,9 @@ async def run(session, goal, url=None, page=None, on_step=None):
         what = "browser was closed" if session.closed else "tab was closed or crashed"
         status, detail = "error", f"the {what} during the task ({type(e).__name__})"
         elapsed, window, scores, title = ms(), [], [], ""
+    finally:
+        if capture is not None:
+            await capture.stop()  # idempotent: also when the run ended early or with an error
     ranked = sorted(range(len(scores)), key=lambda i: -scores[i])
     keep = [i for i in ranked if scores[i] >= 0.5][:TOP_BLOCKS] or ranked[:3] or list(range(min(3, len(window))))
     return {
@@ -139,6 +172,9 @@ async def run(session, goal, url=None, page=None, on_step=None):
             page.context.request if session.direct and not session.is_gone(page) else None,
         ),
         "block_scores": [round(scores[i], 3) for i in sorted(keep)] if scores else [],  # empty: not ranked
+        "items": items,
+        **({"pending": pending} if pending else {}),
+        **({"learned": learned} if learned else {}),
     }
 
 
@@ -159,8 +195,9 @@ async def step(session, page, state=None, op=None, target=None, instruction=None
             raise ValueError("no snapshot of this tab yet: call snapshot first")
         _, targets, controls = page_view(state, [])
         action = resolve(targets, controls, op.upper(), None if target is None else str(target))
-        if action["kind"] == "fill" and text is None:
-            raise ValueError("TYPE_TEXT needs text: the value to type")
+        if action["kind"] in ("fill", "find") and text is None:
+            raise ValueError(f"{op.upper()} needs text: " + ("the value to type" if action["kind"] == "fill"
+                                                                else "the words to jump to"))
     else:
         state = await session.observe(page)
         decision = await choose(state, instruction, [])
@@ -169,7 +206,7 @@ async def step(session, page, state=None, op=None, target=None, instruction=None
         if decision["operation"] in {"DONE", "BLOCKED"}:
             return {"executed": False, "action": action, "decision": decision, "text": None, "state": state,
                     "page_changed": False, "usage": usage}
-        if action["kind"] == "fill" and text is None:
+        if action["kind"] in ("fill", "find") and text is None:
             text, info = await field_text(field_context(instruction, action, state, []))  # NeedsInput propagates
             if info.get("billed"):
                 add_usage(usage, info.get("usage"))

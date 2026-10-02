@@ -13,6 +13,7 @@ import logging
 import random
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 from clearcote.async_api import launch_persistent_context
 from playwright.async_api import Error as PlaywrightError
@@ -21,6 +22,10 @@ from playwright.async_api import async_playwright
 HERE = Path(__file__).parent
 SNAPSHOT_JS = (HERE / "snapshot.js").read_text(encoding="utf-8")
 MARKDOWN_JS = (HERE / "markdown.js").read_text(encoding="utf-8")
+LISTS_JS = (HERE / "lists.js").read_text(encoding="utf-8")
+EXTRACT_JS = (HERE / "extract.js").read_text(encoding="utf-8")  # %s: the list spec, as JSON
+FIND_JS = (HERE / "find.js").read_text(encoding="utf-8")  # %s: the words, as JSON
+FIND_FLICKS = 12  # with no anchor to jump to, at most this many scrolls of about three screens each
 DEFAULT_PROFILE = Path.home() / ".clearcote-jet" / "profile"
 SELECT_ALL = "Meta+A" if sys.platform == "darwin" else "Control+A"
 log = logging.getLogger("clearcote-jet")
@@ -51,7 +56,7 @@ class IsolatedWorld:
             self.cdp = await self.page.context.new_cdp_session(self.page)
         return self.cdp
 
-    async def evaluate(self, expression):
+    async def evaluate(self, expression, await_promise=False):
         for _ in range(2):
             try:
                 cdp = await self.session()
@@ -60,7 +65,8 @@ class IsolatedWorld:
                     world = await cdp.send("Page.createIsolatedWorld", {"frameId": frame_id})
                     self.ctx = world["executionContextId"]
                 result = await cdp.send("Runtime.evaluate", {
-                    "expression": expression, "contextId": self.ctx, "returnByValue": True})
+                    "expression": expression, "contextId": self.ctx, "returnByValue": True,
+                    "awaitPromise": await_promise})
             except PlaywrightError:
                 if self.page.is_closed():
                     raise
@@ -89,6 +95,49 @@ class IsolatedWorld:
         if "exceptionDetails" in result:
             return None
         return result.get("result", {}).get("value")
+
+
+class JsonCapture:
+    """The JSON answers to a tab's XHR and fetch requests, with the request that got each one. Read through the
+    browser's protocol (the page sees nothing); the latest LIMIT are kept, answers over MAX_BYTES are skipped."""
+
+    LIMIT, MAX_BYTES = 40, 2_000_000
+
+    def __init__(self, page):
+        self.page, self.items, self._tasks, self._on = page, [], set(), True
+        page.on("response", self._on_response)
+
+    def _on_response(self, response):
+        request = response.request
+        if request.resource_type not in ("xhr", "fetch") or response.status != 200:
+            return
+        if "json" not in (response.headers.get("content-type") or ""):
+            return
+        task = asyncio.create_task(self._read(response))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _read(self, response):
+        try:
+            body = await response.body()
+            if len(body) > self.MAX_BYTES:
+                return
+            data = json.loads(body)
+        except Exception:  # noqa: BLE001  gone with a navigation, or not JSON after all
+            return
+        request = response.request
+        self.items.append({"url": response.url, "method": request.method, "post_data": request.post_data,
+                           "content_type": request.headers.get("content-type"), "body": data})
+        del self.items[:-self.LIMIT]
+
+    async def stop(self):
+        """Stop listening; the answers kept so far (waiting for any still being read). Safe to call again."""
+        if self._on:
+            self._on = False
+            self.page.remove_listener("response", self._on_response)
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        return self.items
 
 
 def aim_point(box):
@@ -179,10 +228,12 @@ class Session:
             await self.context.close()
 
     @staticmethod
-    async def _eval(page, expression, frame=None):
+    async def _eval(page, expression, frame=None, await_promise=False):
         """Evaluate in the main frame's isolated world, or in child frame `frame`'s (None if it is gone)."""
         world = page._ca_world if frame is None else page._ca_frames.get(frame, {}).get("world")
-        return await world.evaluate(expression) if world else None
+        if not world:
+            return None
+        return await (world.evaluate(expression, await_promise=True) if await_promise else world.evaluate(expression))
 
     async def _frames(self, page):
         """The page's child frames (iframes, at any depth): {frame id: info}, each with its own isolated world that is
@@ -376,6 +427,9 @@ class Session:
         if kind == "scroll":
             await page.mouse.wheel(0, action["delta"])  # humanized: stepped wheel ticks when humanize is on
             return
+        if kind == "find":
+            await self._find(page, text)
+            return
         node, frame = int(action["node"]), action.get("frame")
         if kind == "select":
             await self._select_from_list(page, node, action["value"], frame)
@@ -455,8 +509,56 @@ class Session:
         if current is not None and current != plan["to"]:
             raise RuntimeError("Dropdown selection was not confirmed; inspect before retrying.")
 
+    async def _find(self, page, words):
+        """Go to where `words` appear on this page, the way a person reaches a section of a long document.
+
+        The first heading with the words (else the first text) is the place. If it has an anchor, the tab goes to it,
+        as a table-of-contents link would; otherwise the page is scrolled there in screen-sized flicks of the wheel.
+        Words that are not on the page change nothing, which the loop then sees.
+        """
+        place = await self._eval(page, FIND_JS % json.dumps(words or ""))
+        if not place:
+            return
+        if place.get("id"):
+            await page.goto(page.url.split("#", 1)[0] + "#" + quote(place["id"], safe=""), wait_until="commit")
+            await asyncio.sleep(0.3)
+            return
+        vh = place["vh"] or 800
+        for _ in range(FIND_FLICKS):
+            now = await self._eval(page, "scrollY") or 0
+            delta = place["y"] - now - vh * 0.2
+            if abs(delta) < vh * 0.5:
+                break
+            await page.mouse.wheel(0, max(-3 * vh, min(3 * vh, delta)))
+            await asyncio.sleep(0.15)
+
     async def markdown(self, page):
         return await self._eval(page, MARKDOWN_JS) or ""
+
+    async def lists(self, page):
+        """Lists of results on the page, best first, each with a selector spec and its first rows (no model)."""
+        return await self._eval(page, LISTS_JS) or []
+
+    async def extract(self, page, spec):
+        """Rows of a list, read with a saved spec ({item, fields})."""
+        return await self._eval(page, EXTRACT_JS % json.dumps(spec)) or []
+
+    async def fetch_json(self, page, request):
+        """Repeat a recorded JSON request from inside the page: the tab's own cookies and network, from the isolated
+        world, so page scripts don't see it. None when it fails or the answer is not JSON."""
+        init = {"method": request.get("method") or "GET", "credentials": "include"}
+        if request.get("post_data") is not None and init["method"] != "GET":
+            init["body"] = request["post_data"]
+            if request.get("content_type"):
+                init["headers"] = {"content-type": request["content_type"]}
+        expression = ("fetch(%s, %s).then(r => r.ok ? r.json() : null).catch(() => null)"
+                      % (json.dumps(request["url"]), json.dumps(init)))
+        return await self._eval(page, expression, await_promise=True)
+
+    @staticmethod
+    def capture_json(page):
+        """Start keeping the JSON answers this tab receives (for finding the request behind a list of results)."""
+        return JsonCapture(page)
 
     async def screenshot(self, page):
         """PNG of the visible part of the tab, through raw CDP. Not page.screenshot(): Playwright first sets an inline

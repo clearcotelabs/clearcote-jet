@@ -242,7 +242,7 @@ def test_browse_and_act_on_one_tab_do_not_overlap(session, monkeypatch):
     opened()
     started = asyncio.Event()
 
-    async def slow_run(session_, goal, page=None, on_step=None):
+    async def slow_run(session_, goal, page=None, on_step=None, **options):
         started.set()
         await asyncio.sleep(0.2)
         return {"status": "done", "detail": None, "url": page.url, "title": "T", "actions": 0, "decisions": 1,

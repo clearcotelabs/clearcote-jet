@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .agent import run
 from .browser import DEFAULT_PROFILE, Session
+from .skills import run_with_skill
 
 
 def load_env_file(path=".env"):
@@ -28,7 +29,8 @@ def load_env_file(path=".env"):
 
 def print_step(step):
     text = f" ← {step['text']!r}" if step["text"] else ""
-    print(f"[{step['at_ms']:>6} ms] {step['kind']:6} {step['action'][:70]}{text}  (p={step['probability']})", flush=True)
+    how = "replayed" if step.get("replayed") else f"p={step['probability']}"
+    print(f"[{step['at_ms']:>6} ms] {step['kind']:6} {step['action'][:70]}{text}  ({how})", flush=True)
 
 
 async def serve_browser(args):
@@ -51,7 +53,11 @@ async def run_goal(args):
                                        show_cursor=args.show_cursor)
     try:
         page = await session.new_tab(args.url)
-        result = await run(session, args.goal, page=page, on_step=print_step)
+        if args.url and not args.no_skill:  # learned once, then replayed with no model (see skills.py)
+            result = await run_with_skill(session, args.goal, url=args.url, page=page, on_step=print_step,
+                                          confirm=args.confirm)
+        else:
+            result = await run(session, args.goal, page=page, on_step=print_step, confirm=args.confirm)
         print(json.dumps({k: v for k, v in result.items() if k != "trace"}, indent=2, ensure_ascii=False))
         if args.keep_open and not args.cdp:
             print("Browser kept open (Ctrl-C to close).", flush=True)
@@ -73,6 +79,10 @@ def main():
     r.add_argument("--keep-open", action="store_true")
     r.add_argument("--no-humanize", action="store_true", help="instant clicks/typing: faster, less human-looking")
     r.add_argument("--show-cursor", action="store_true", help="demo: draw the mouse cursor (visible to the page)")
+    r.add_argument("--confirm", action="store_true",
+                   help="stop before a click that can't be taken back (send, buy, book, delete...)")
+    r.add_argument("--no-skill", action="store_true",
+                   help="work it out step by step even if this task was learned before, and save nothing")
     for p in (b, r):
         p.add_argument("--profile", default=str(DEFAULT_PROFILE))
         p.add_argument("--headless", action="store_true")

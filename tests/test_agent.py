@@ -44,6 +44,9 @@ class Session:
     async def settled_markdown(self, page):
         return MARKDOWN
 
+    async def lists(self, page):
+        return []
+
     def is_gone(self, page):
         return False
 
