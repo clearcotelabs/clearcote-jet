@@ -15,6 +15,11 @@ from .shortcut import find_shortcut
 TOP_BLOCKS = 8
 
 
+def _hidden(action):
+    """A control offered only when the run is stuck: a link in a closed menu, or one scrolled away in a scroll box."""
+    return action.get("menu") is not None or action.get("panel") is not None
+
+
 def _page_of(url):
     """A page, for the menus rule: its URL without the #fragment (a jump within the page is the same page)."""
     return (url or "").split("#", 1)[0]
@@ -41,9 +46,9 @@ async def run(session, goal, url=None, page=None, on_step=None, history=None, co
     status, detail, verdict, window, scores = "blocked", None, None, [], []
     items, learned, pending = [], None, None
     capture = session.capture_json(page) if learn else None
-    # Pages where the links inside closed menus are offered too, because the run got stuck there: the model chose
-    # BLOCKED, or scrolled MENU_SCROLL_STREAK times in a row. Elsewhere they stay out, as every offered link costs
-    # tokens in every decision.
+    # Pages where the links inside closed menus (and the controls scrolled away inside a scroll box of their own) are
+    # offered too, because the run got stuck there: the model chose BLOCKED, or scrolled MENU_SCROLL_STREAK times in a
+    # row. Elsewhere they stay out, as every offered link costs tokens in every decision.
     menus_on = set()
 
     async def look(after=None):
@@ -64,11 +69,11 @@ async def run(session, goal, url=None, page=None, on_step=None, history=None, co
             add_usage(decide_usage, decision["usage"])
             action, operation = decision["action"], decision["operation"]
             if operation == "BLOCKED" and _page_of(state["url"]) not in menus_on:
-                # Stuck: before giving up, look inside the page's closed menus too (the page the goal needs is often
-                # one link away, under a menu such as "Docs"). Once per page, and only if it has such links.
+                # Stuck: before giving up, look inside the page's closed menus and scroll boxes too (the page the goal
+                # needs is often one link away, under a menu such as "Docs"). Once per page, and only if it has any.
                 menus_on.add(_page_of(state["url"]))
                 wider = await session.observe(page, menus=True)
-                if any(a.get("menu") is not None for a in wider["actions"]):
+                if any(_hidden(a) for a in wider["actions"]):
                     state, verdict = wider, None
                     continue
             if operation in {"DONE", "BLOCKED"}:

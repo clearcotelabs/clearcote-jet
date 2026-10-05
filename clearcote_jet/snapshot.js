@@ -97,9 +97,76 @@
     e.dispatchEvent(new Event('change',{bubbles:true}));
     return true;
   };
+  // A scroll box of its own (a phone menu's panel, a dialog's body, a side list, a carousel): the nearest ancestor
+  // that scrolls, other than the page itself. Scrolling the page does not move what is inside it.
+  const scroller=e=>{
+    for (let p=e.parentElement; p && p!==document.body && p!==document.documentElement; p=p.parentElement) {
+      const cs=getComputedStyle(p);
+      if ((/(auto|scroll)/.test(cs.overflowY) && p.scrollHeight>p.clientHeight+2) ||
+          (/(auto|scroll)/.test(cs.overflowX) && p.scrollWidth>p.clientWidth+2)) return p;
+    }
+    return null;
+  };
+  // The part of a scroll box a person sees and can wheel over: its inside, cut to the screen.
+  const view=p=>{
+    const r=p.getBoundingClientRect(), left=Math.max(r.left+p.clientLeft,0), top=Math.max(r.top+p.clientTop,0);
+    const right=Math.min(r.left+p.clientLeft+p.clientWidth,innerWidth);
+    const bottom=Math.min(r.top+p.clientTop+p.clientHeight,innerHeight);
+    return right-left>=20 && bottom-top>=20 ? {left,top,right,bottom} : null;
+  };
+  // Controls scrolled out of view inside a scroll box of their own: wheeling over the box brings them in, scrolling
+  // the page does not (and a page under an open phone menu often cannot scroll at all). Named by the group they are
+  // in: the last control expanded before them in the box ("Docs" in an open phone menu), else the box's own label.
+  const clipped=limit=>{
+    const out=[], clickable=['link','menuitem','button','option','tab','checkbox','radio','switch'], memo=new Map();
+    const boxFrom=p=>{ // scroller(), remembered per element: a page has many controls under the same ancestors
+      if (!p || p===document.body || p===document.documentElement) return null;
+      if (!memo.has(p)) {
+        const cs=getComputedStyle(p);
+        memo.set(p,(/(auto|scroll)/.test(cs.overflowY) && p.scrollHeight>p.clientHeight+2) ||
+          (/(auto|scroll)/.test(cs.overflowX) && p.scrollWidth>p.clientWidth+2) ? p : boxFrom(p.parentElement));
+      }
+      return memo.get(p);
+    };
+    for (const e of deepAll(selector)) {
+      if (out.length>=limit) break;
+      if (!safe(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]') || !visible(e)) continue;
+      const rname=role(e), p=rname && clickable.includes(rname) && boxFrom(e.parentElement), v=p && visible(p) && view(p);
+      if (!v) continue;
+      const r=e.getBoundingClientRect();
+      if (!r.width || !r.height || (r.top>=v.top-1 && r.bottom<=v.bottom+1 && r.left>=v.left-1 && r.right<=v.right+1)) continue;
+      const label=name(e).replace(/\s+/g,' ').trim();
+      if (!label) continue;
+      let group=null;
+      for (const t of p.querySelectorAll('[aria-expanded="true"]'))
+        if (t!==e && t.compareDocumentPosition(e) & Node.DOCUMENT_POSITION_FOLLOWING) group=t;
+      const own=p.getAttribute('aria-label') ||
+        (p.getAttribute('aria-labelledby')||'').split(/\s+/).filter(Boolean).map(id=>name(byId(p,id))).join(' ');
+      const where=((group && name(group)) || own || 'Scroll box').replace(/\s+/g,' ').trim().slice(0,60);
+      out.push({node:identity(e),role:rname,kind:'click',value:'',panel:identity(p),
+        label:(where+' › '+label).slice(0,200),guard:JSON.stringify(cache.guard(e))});
+    }
+    return out;
+  };
+  // Where to wheel to bring control `id` into view in scroll box `pid`: a point over the box where the wheel scrolls
+  // this box and not a smaller one inside it, and how far the control is from the middle of the box's view.
+  cache.panelPoint=(pid,id)=>{
+    const p=cache.nodes.get(pid), e=cache.nodes.get(id), v=p?.isConnected && view(p);
+    if (!v || !e?.isConnected) return null;
+    const r=e.getBoundingClientRect();
+    for (const [fx,fy] of [[.5,.5],[.5,.3],[.5,.7],[.3,.5],[.7,.5],[.2,.2],[.8,.8],[.2,.8],[.8,.2]]) {
+      const x=v.left+(v.right-v.left)*fx, y=v.top+(v.bottom-v.top)*fy, h=deepPoint(x,y);
+      if (h && (h===p || (p.contains(h) && scroller(h)===p)))
+        return {x,y,dx:r.left+r.width/2-(v.left+v.right)/2,dy:r.top+r.height/2-(v.top+v.bottom)/2,
+          at:[p.scrollLeft,p.scrollTop]};
+    }
+    return null;
+  };
+  cache.scrolled=pid=>{ const p=cache.nodes.get(pid); return p?.isConnected ? [p.scrollLeft,p.scrollTop] : null; };
   // Links inside closed menus (navigation dropdowns, menu panels, collapsed <details>) are hidden, so they are never
   // among the actions below. The agent asks for them only when it is stuck on a page; each one names its trigger
-  // (`menu`), the visible control the executor hovers or clicks to open the menu before clicking the link.
+  // (`menu`), the visible control the executor hovers or clicks to open the menu before clicking the link. Controls
+  // scrolled out of view inside a scroll box of their own come with them, naming their box (`panel`).
   cache.menus=()=>{
     const shown=e=>{
       if (!visible(e)) return false;
@@ -127,7 +194,10 @@
       const t=li && [...li.children].find(c=>!c.contains(a) && usable(c) && c.getBoundingClientRect().height>0);
       if (t) pairs.push([t,li]);
     }
-    const out=[], taken=new Set();
+    // First what a scroll box hides (those controls are visible, only scrolled away), so that none of them is taken
+    // for a link in a closed menu that happens to contain the box.
+    const out=clipped(40), taken=new Set(out.map(o=>cache.nodes.get(o.node)));
+    const limit=out.length+60;
     for (const [t,panel] of pairs) {
       const menu=(name(t)||'Menu').replace(/\s+/g,' ').trim().slice(0,60);
       for (const e of panel.querySelectorAll('a[href],[role="menuitem"],[role="link"]')) {
@@ -138,7 +208,7 @@
         // menu_link: the trigger is itself a link (a hover menu's top item), so clicking it would leave the page.
         out.push({node:identity(e),role:rname,kind:'click',value:'',menu:identity(t),menu_link:t.matches('a[href]'),
           label:(menu+' › '+label).slice(0,200),guard:JSON.stringify(cache.guard(e))});
-        if (out.length>=60) return out;
+        if (out.length>=limit) return out;
       }
     }
     return out;

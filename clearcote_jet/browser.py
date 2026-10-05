@@ -373,9 +373,11 @@ class Session:
         return state
 
     async def _with_menus(self, page, state):
-        """`state` plus the links inside the page's closed menus (main frame), after the controls a person can see.
+        """`state` plus the links inside the page's closed menus, and the controls scrolled out of view inside a scroll
+        box of their own (main frame), after the controls a person can see.
 
-        Each carries `menu`, the node of the control that opens its menu: act() opens it before clicking the link.
+        A menu link carries `menu`, the node of the control that opens its menu: act() opens it before clicking the
+        link. A control in a scroll box carries `panel`, the box: act() wheels over the box until it is in view.
         """
         entries = await self._eval(page, "window.__ca?.menus?.() ?? []") or []
         n = sum(1 for a in state["actions"] if "node" in a)  # the page's controls, then scroll, find and wait
@@ -461,6 +463,9 @@ class Session:
         if action.get("menu") is not None:
             await self._press_in_menu(page, int(action["menu"]), node, bool(action.get("menu_link")))
             return
+        if action.get("panel") is not None:
+            await self._press_in_panel(page, int(action["panel"]), node)
+            return
         await self._press(page, node, kind, frame)
         if kind == "fill":
             if self.humanize:
@@ -540,6 +545,25 @@ class Session:
             except StalePage:
                 continue  # the menu closed on the way to the link: open it again
         raise StalePage("The menu did not open, or closed before its link could be clicked. Observe again.")
+
+    async def _press_in_panel(self, page, panel, node):
+        """Click a control scrolled out of view inside a scroll box of its own (a phone menu's panel, a dialog's body,
+        a side list): wheel over that box, as a person does, until the control is in view and still; then click it."""
+        for _ in range(FIND_FLICKS):
+            if await self._shows(page, node, timeout=0.25, still=1):
+                break
+            way = await self._eval(page, f"window.__ca?.panelPoint({panel}, {node})")
+            if not way:
+                raise StalePage("The scroll box is gone, covered or out of view. Observe again.")
+            await page.mouse.move(way["x"], way["y"])  # the wheel scrolls what is under the pointer
+            reach = 600  # about a screen per flick of the wheel, like _wheel_to
+            await page.mouse.wheel(max(-reach, min(reach, way["dx"])), max(-reach, min(reach, way["dy"])))
+            await asyncio.sleep(0.2)
+            if await self._eval(page, f"window.__ca?.scrolled({panel})") == way["at"]:
+                break  # the box goes no further
+        if not await self._shows(page, node):
+            raise StalePage("The control did not come into view in its scroll box. Observe again.")
+        await self._press(page, node)
 
     async def _point_at(self, page, node):
         """Rest the pointer on a control without pressing it (to open a menu that opens on hover). Near its middle, not
