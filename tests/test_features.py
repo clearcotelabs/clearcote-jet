@@ -292,6 +292,73 @@ def test_a_choice_already_made_is_not_made_again(monkeypatch, tmp_path):
     assert result["status"] == "done" and [a[0] for a in site.acts] == ["fill", "click"]
 
 
+class DocsSite:
+    """A home page whose way on is a link inside a closed menu: offered only when the menus are asked for."""
+
+    closed = direct = False
+    MENU_LINK = {"node": 7, "kind": "click", "role": "link", "label": "Docs › Recommended settings", "value": "",
+                 "menu": 3}
+
+    def __init__(self):
+        self.path, self.acts, self.menu_looks = "/", [], 0
+
+    async def new_tab(self, url=None):
+        return Page(url or "https://docs.example/")
+
+    async def observe(self, page, after=None, menus=False):
+        self.menu_looks += menus
+        page.url = "https://docs.example" + self.path
+        home = self.path == "/"
+        actions = [{"node": 1, "kind": "click", "role": "link", "label": "Home", "value": ""}]
+        actions += [dict(self.MENU_LINK)] if menus and home else []
+        actions += [{"id": "wait", "kind": "wait", "label": "Wait for the page to update"}]
+        for i, a in enumerate(actions):
+            a.setdefault("id", f"e{i + 1}")
+        text = "Welcome" if home else "Recommended settings\nWhat to set and what to leave alone"
+        return {"url": page.url, "title": "Docs", "text": text, "actions": actions, "marker": self.path}
+
+    async def act(self, page, state, action, text=None):
+        self.acts.append(action["label"])
+        if action.get("menu") is not None:
+            self.path = "/docs/recommendations"
+
+    async def fresh(self, page, state, action=None):
+        return True
+
+    async def settled_markdown(self, page):
+        return "# Recommended settings\n\nWhat to set and what to leave alone" if self.path != "/" else "# Welcome"
+
+    async def lists(self, page):
+        return []
+
+    def capture_json(self, page):
+        return Capture([])
+
+    def is_gone(self, page):
+        return False
+
+
+def test_a_link_inside_a_menu_is_learned_and_replayed_with_no_model(monkeypatch, tmp_path):
+    store, goal, url = SkillStore(tmp_path), "Find the recommended settings", "https://docs.example/"
+    model(monkeypatch, ("BLOCKED", None), ("CLICK", DocsSite.MENU_LINK["label"]), ("DONE", None))
+    first = asyncio.run(run_with_skill(DocsSite(), goal, url=url, page=Page(url), store=store))
+    assert first["status"] == "done" and first["skill"]["used"] == "learned"
+    skill = store.get(goal, url)
+    assert skill["steps"] == [{"kind": "click", "role": "link", "label": "Docs › Recommended settings", "nth": 0,
+                               "nth_shape": 0, "in_menu": True}]
+    no_model(monkeypatch)
+    site = DocsSite()
+    again = asyncio.run(run_with_skill(site, goal, url=url, page=Page(url), store=store))
+    assert again["status"] == "done" and again["skill"]["used"] == "replayed" and again["usage"]["requests"] == 0
+    assert site.acts == ["Docs › Recommended settings"] and site.menu_looks >= 1
+
+
+def test_target_info_marks_a_link_inside_a_menu():
+    link = {"node": 7, "kind": "click", "role": "link", "label": "Docs › Install", "menu": 3}
+    plain = {"node": 1, "kind": "click", "role": "link", "label": "Home"}
+    assert target_info(link, [plain, link])["in_menu"] is True and "in_menu" not in target_info(plain, [plain, link])
+
+
 def test_locate_finds_a_control_again_by_label_then_by_shape():
     actions = [{"node": i, "kind": "click", "role": "link", "label": label}
                for i, label in enumerate(["Story one", "143 comments", "Story two", "9 comments"], 1)]

@@ -46,6 +46,8 @@ def target_info(action, actions):
         info["delta"] = action.get("delta")
     if action.get("frame"):
         info["in_frame"] = True
+    if action.get("menu") is not None:
+        info["in_menu"] = True  # a link inside a closed menu: a replay looks inside the menus to find it again
     return info
 
 

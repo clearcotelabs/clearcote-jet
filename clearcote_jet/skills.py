@@ -94,6 +94,8 @@ def skill_from_run(goal, start_url, result):
             step["text"] = h.get("text")
         if h["kind"] == "scroll":
             step["delta"] = t.get("delta") or 560
+        if t.get("in_menu"):
+            step["in_menu"] = True
         if h["kind"] == "click" and CONSENT.search(h["action"] or ""):
             step["optional"] = True  # a cookie banner shows once, not on every visit
         steps.append(step)
@@ -170,16 +172,22 @@ async def replay(session, skill, page, on_step=None, confirm=False):
             via = "shortcut"
     if via == "steps":
         rows = []
+
+        def look(step):  # a link inside a closed menu is only offered when the menus are asked for
+            return session.observe(page, menus=True) if step.get("in_menu") else session.observe(page)
+
         state = await session.observe(page)
         for i, step in enumerate(skill["steps"]):
             if step["kind"] == "wait":
                 await asyncio.sleep(1.0)
                 state = await session.observe(page)
                 continue
+            if step.get("in_menu"):
+                state = await look(step)
             action = _control(step, state)
             if action is None:  # the page may still be filling in
                 await asyncio.sleep(1.0)
-                state = await session.observe(page)
+                state = await look(step)
                 action = _control(step, state)
             if action is None:
                 if step.get("optional") or already_chosen(step, state["actions"]):
@@ -194,7 +202,7 @@ async def replay(session, skill, page, on_step=None, confirm=False):
             try:
                 await session.act(page, state, action, step.get("text"))
             except StalePage:  # the page moved under the step: look again, once
-                state = await session.observe(page)
+                state = await look(step)
                 action = _control(step, state)
                 try:
                     if action is None:

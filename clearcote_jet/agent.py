@@ -9,10 +9,15 @@ from .browser import BrowserClosed, StalePage
 from .describe import best_list, end_lines, irreversible, target_info
 from .model import (MAX_RANKED_BLOCKS, NeedsInput, add_usage, choose, estimate_usd, field_context, field_text,
                     page_view, rank_blocks, resolve, resolve_redirects, screen_anchor, split_chunks)
-from .questions import MAX_SCROLL_STREAK, MAX_STEPS
+from .questions import MAX_SCROLL_STREAK, MAX_STEPS, MENU_SCROLL_STREAK
 from .shortcut import find_shortcut
 
 TOP_BLOCKS = 8
+
+
+def _page_of(url):
+    """A page, for the menus rule: its URL without the #fragment (a jump within the page is the same page)."""
+    return (url or "").split("#", 1)[0]
 
 
 async def run(session, goal, url=None, page=None, on_step=None, history=None, confirm=False, learn=False):
@@ -36,8 +41,18 @@ async def run(session, goal, url=None, page=None, on_step=None, history=None, co
     status, detail, verdict, window, scores = "blocked", None, None, [], []
     items, learned, pending = [], None, None
     capture = session.capture_json(page) if learn else None
+    # Pages where the links inside closed menus are offered too, because the run got stuck there: the model chose
+    # BLOCKED, or scrolled MENU_SCROLL_STREAK times in a row. Elsewhere they stay out, as every offered link costs
+    # tokens in every decision.
+    menus_on = set()
+
+    async def look(after=None):
+        if _page_of(page.url) in menus_on:
+            return await session.observe(page, after=after, menus=True)
+        return await session.observe(page, after=after)
+
     try:
-        state = await session.observe(page)
+        state = await look()
         first_text = state["text"]
         while True:
             if decisions >= MAX_STEPS * 2 or len(history) >= MAX_STEPS:
@@ -48,6 +63,14 @@ async def run(session, goal, url=None, page=None, on_step=None, history=None, co
             timing["decide_ms"] += decision["latency_ms"]
             add_usage(decide_usage, decision["usage"])
             action, operation = decision["action"], decision["operation"]
+            if operation == "BLOCKED" and _page_of(state["url"]) not in menus_on:
+                # Stuck: before giving up, look inside the page's closed menus too (the page the goal needs is often
+                # one link away, under a menu such as "Docs"). Once per page, and only if it has such links.
+                menus_on.add(_page_of(state["url"]))
+                wider = await session.observe(page, menus=True)
+                if any(a.get("menu") is not None for a in wider["actions"]):
+                    state, verdict = wider, None
+                    continue
             if operation in {"DONE", "BLOCKED"}:
                 # The same verdict twice in a row on the same URL stands even if the page is still changing (late
                 # widgets, live counters): deciding again would cost another full request for the same answer.
@@ -55,7 +78,7 @@ async def run(session, goal, url=None, page=None, on_step=None, history=None, co
                     verdict = (operation, state["url"])
                     stale.append(f"{ms()}ms {operation}: page changed before completion"
                                  f" [{getattr(session, 'last_diff', '')}]")  # what changed
-                    state = await session.observe(page)
+                    state = await look()
                     continue
                 status = operation.lower()
                 break
@@ -91,7 +114,7 @@ async def run(session, goal, url=None, page=None, on_step=None, history=None, co
             except StalePage as e:
                 stale.append(f"{ms()}ms {action['kind']} {action['label'][:40]!r}: {e}"
                              f" [{getattr(session, 'last_diff', '')}]")  # what changed
-                state = await session.observe(page)
+                state = await look()
                 continue
             pending_text = None
             history.append({
@@ -110,12 +133,18 @@ async def run(session, goal, url=None, page=None, on_step=None, history=None, co
                 "url": state["url"],  # where the action happened; with led_to, the model can see navigation circles
                 "target": target_info(action, state["actions"]),  # how a skill finds this control again
             })
-            new_state = await session.observe(page, after=action)
+            new_state = await look(after=action)
             history[-1]["page_changed"] = new_state["marker"] != state["marker"]
             history[-1]["led_to"] = new_state["url"]
             state = new_state
             if on_step and inspect.isawaitable(reported := on_step(history[-1])):
                 await reported
+            scrolls = history[-MENU_SCROLL_STREAK:]
+            if (len(scrolls) == MENU_SCROLL_STREAK and all(h["kind"] == "scroll" for h in scrolls)
+                    and _page_of(state["url"]) not in menus_on):
+                # Scrolling on and on is searching: the menus may hold the way there.
+                menus_on.add(_page_of(state["url"]))
+                state = await look()
             last = history[-3:]
             if len(last) == 3 and all(not h["page_changed"] and h["kind"] != "wait" for h in last):
                 status, detail = "blocked", "Three actions in a row did not change the page."

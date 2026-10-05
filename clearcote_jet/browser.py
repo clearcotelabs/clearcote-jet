@@ -372,7 +372,31 @@ class Session:
         state["marker"] = json.dumps(marker)
         return state
 
-    async def observe(self, page, after=None):
+    async def _with_menus(self, page, state):
+        """`state` plus the links inside the page's closed menus (main frame), after the controls a person can see.
+
+        Each carries `menu`, the node of the control that opens its menu: act() opens it before clicking the link.
+        """
+        entries = await self._eval(page, "window.__ca?.menus?.() ?? []") or []
+        n = sum(1 for a in state["actions"] if "node" in a)  # the page's controls, then scroll, find and wait
+        offered = {(a.get("frame"), a["node"]) for a in state["actions"][:n]}
+        entries = [e for e in entries if (None, e["node"]) not in offered]
+        if not entries:
+            return state
+        guards = dict(state.get("guards") or {})
+        for e in entries:
+            guards[str(e["node"])] = e.pop("guard")  # fresh() compares it, as for any other control
+        actions = state["actions"][:n] + entries + state["actions"][n:]
+        for i, a in enumerate(actions[:n + len(entries)]):
+            a["id"] = f"e{i + 1}"
+        return {**state, "actions": actions, "guards": guards}
+
+    async def observe(self, page, after=None, menus=False):
+        """The settled page. menus: also offer the links inside its closed menus (the agent asks when it is stuck)."""
+        state = await self._observe(page, after)
+        return await self._with_menus(page, state) if menus else state
+
+    async def _observe(self, page, after=None):
         if after and after["kind"] == "fill" and after.get("role") == "combobox":
             # Let autocomplete suggestions arrive before the model chooses from an incomplete popup.
             for _ in range(8):
@@ -434,6 +458,9 @@ class Session:
         if kind == "select":
             await self._select_from_list(page, node, action["value"], frame)
             return
+        if action.get("menu") is not None:
+            await self._press_in_menu(page, int(action["menu"]), node, bool(action.get("menu_link")))
+            return
         await self._press(page, node, kind, frame)
         if kind == "fill":
             if self.humanize:
@@ -487,6 +514,87 @@ class Session:
         await asyncio.sleep(random.uniform(0.06, 0.14))  # a finger holds the button for a moment
         await page.mouse.up()
 
+    async def _press_in_menu(self, page, trigger, node, menu_link=False, attempts=3):
+        """Click a link inside a closed menu the way a person does: point at the menu (most navigation menus open on
+        hover); if that opens nothing, click it open, unless the trigger is itself a link (`menu_link`: clicking it
+        would leave the page); then go down inside the menu and click the link. A menu that closes on the way (the
+        pointer slipped off it) is opened again, up to `attempts` times. A trigger that scrolled out of view (a header
+        that is not sticky) is brought back first."""
+        for _ in range(attempts):
+            if not await self._reveal(page, trigger):
+                raise StalePage("The menu's trigger is gone or covered. Observe again.")
+            # Open the menu only if it is closed: clicking the trigger of an open menu closes it again.
+            if not await self._shows(page, node, timeout=0.25, still=1):
+                await self._point_at(page, trigger)
+                opened = await self._shows(page, node, timeout=0.8)
+                if not opened and not menu_link:
+                    await self._press(page, trigger)  # a menu that opens on click only, or a <details>
+                    opened = await self._shows(page, node)
+                if not opened:
+                    continue
+            if self.humanize and (way := await self._eval(page, f"window.__ca?.waypoint({trigger}, {node})")):
+                await page.mouse.move(way["x"], way["y"])  # down inside the menu to the link's row, then across
+            try:
+                await self._press(page, node)
+                return
+            except StalePage:
+                continue  # the menu closed on the way to the link: open it again
+        raise StalePage("The menu did not open, or closed before its link could be clicked. Observe again.")
+
+    async def _point_at(self, page, node):
+        """Rest the pointer on a control without pressing it (to open a menu that opens on hover). Near its middle, not
+        anywhere on it: from an edge, the way on into the menu can slip off it, and a menu closes soon after."""
+        box = await self._eval(page, f"window.__ca?.box({node}, 'click')")
+        if not box:
+            raise StalePage("The menu's trigger is gone or covered. Observe again.")
+        spread = (0.4, 0.6) if self.humanize else (0.5, 0.5)
+        await page.mouse.move(box["x"] + box["width"] * random.uniform(*spread),
+                              box["y"] + box["height"] * random.uniform(*spread))  # humanized: a curved path
+
+    async def _shows(self, page, node, timeout=1.5, still=2):
+        """Wait until a control can be pressed and has stopped moving (a menu fading in, then sliding into place):
+        the same place `still` looks in a row after the first, 0.1 s apart. Up to `timeout` seconds. Aiming while it
+        still moves lands the press, or the release, on whatever ends up there."""
+        last, steady = None, 0
+        for _ in range(int(timeout / 0.1)):
+            box = await self._eval(page, f"window.__ca?.box({node}, 'click')")
+            now = box and tuple(round(box[k]) for k in ("x", "y", "width", "height"))
+            steady = steady + 1 if now and now == last else 0
+            if steady >= still:
+                return True
+            last = now
+            await asyncio.sleep(0.1)
+        return False
+
+    async def _reveal(self, page, node):
+        """Bring a control that is out of view back into view with the wheel, in flicks of up to three screens (as a
+        person scrolls back up to a header); True once it can be pressed."""
+        for _ in range(FIND_FLICKS):
+            if await self._eval(page, f"window.__ca?.box({node}, 'click')"):
+                return True
+            where = await self._eval(page, f"(() => {{ const e = window.__ca?.nodes.get({node}); if (!e?.isConnected) "
+                                           f"return null; const r = e.getBoundingClientRect(); "
+                                           f"return {{y: r.y, vh: innerHeight, at: scrollY}}; }})()")
+            if not where:
+                return False
+            vh = where["vh"] or 800
+            await page.mouse.wheel(0, max(-3 * vh, min(3 * vh, where["y"] - vh * 0.2)))  # to the top fifth
+            await asyncio.sleep(0.15)
+            if await self._eval(page, "scrollY") == where["at"]:  # the page goes no further: it is covered, not away
+                break
+        return bool(await self._eval(page, f"window.__ca?.box({node}, 'click')"))
+
+    async def _wheel_to(self, page, y, vh):
+        """Scroll in flicks of the wheel (up to three screens each) until page position `y` is near the top."""
+        vh = vh or 800
+        for _ in range(FIND_FLICKS):
+            now = await self._eval(page, "scrollY") or 0
+            delta = y - now - vh * 0.2
+            if abs(delta) < vh * 0.5:
+                break
+            await page.mouse.wheel(0, max(-3 * vh, min(3 * vh, delta)))
+            await asyncio.sleep(0.15)
+
     async def _select_from_list(self, page, node, value, frame=None):
         """Choose a native <select> option the way a person does: open the list, arrow to it, press Enter.
 
@@ -523,14 +631,7 @@ class Session:
             await page.goto(page.url.split("#", 1)[0] + "#" + quote(place["id"], safe=""), wait_until="commit")
             await asyncio.sleep(0.3)
             return
-        vh = place["vh"] or 800
-        for _ in range(FIND_FLICKS):
-            now = await self._eval(page, "scrollY") or 0
-            delta = place["y"] - now - vh * 0.2
-            if abs(delta) < vh * 0.5:
-                break
-            await page.mouse.wheel(0, max(-3 * vh, min(3 * vh, delta)))
-            await asyncio.sleep(0.15)
+        await self._wheel_to(page, place["y"], place["vh"])
 
     async def markdown(self, page):
         return await self._eval(page, MARKDOWN_JS) or ""

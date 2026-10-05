@@ -185,7 +185,7 @@ Put them in `.env` (see `.env.example`) or the environment:
 
 | Field | Meaning |
 |---|---|
-| `status` | `done`, `blocked` (nothing on the page can move it forward, or it scrolled 12 times in a row), `needs_input` (the goal lacks a value a field needs), `needs_confirmation` (with `confirm`: the next click can't be taken back), `budget` (hit the step cap) or `error` |
+| `status` | `done`, `blocked` (nothing on the page, its closed menus included, can move it forward, or it scrolled 12 times in a row), `needs_input` (the goal lacks a value a field needs), `needs_confirmation` (with `confirm`: the next click can't be taken back), `budget` (hit the step cap) or `error` |
 | `trace` | every step: what was done, the text typed, its probability, the runner-up options and how long the decision took (replayed steps are marked `replayed`) |
 | `stale` | steps that were decided again because the page changed before Jet could act |
 | `usage` | decision-model tokens and requests, `estimated_usd`, and any text-model tokens |
@@ -198,7 +198,11 @@ Put them in `.env` (see `.env.example`) or the environment:
 
 1. **Look.** Jet lists the controls a person could use right now: visible, enabled, not hidden behind a pop-up,
    including those inside embedded frames (iframes), same-site or cross-site. Password fields can be filled
-   but are never read: Jet only sees whether one is empty, never what it holds.
+   but are never read: Jet only sees whether one is empty, never what it holds. When it gets stuck on a page (the
+   model finds no way forward there, or it has scrolled three times in a row), it also lists the links inside the
+   page's closed menus: navigation dropdowns, menu panels and collapsed sections, each named by its menu
+   (`Docs › Recommended settings`). To click one, it opens the menu the way a person does, pointing at it (or
+   clicking it, if pointing opens nothing), moves down inside the menu and clicks the link.
 2. **Decide.** One request to the decision model picks the kind of step and the control together, with a probability for
    every option. The model only chooses from that list; it never writes code or coordinates.
 3. **Act.** Jet checks that the page has not changed, then moves the mouse along a curved path, clicks, and types key by
@@ -224,6 +228,8 @@ Put them in `.env` (see `.env.example`) or the environment:
   of contents, and stops after 12 scrolls in a row with `blocked`.
 - Links that open a new tab are not followed, and closed shadow roots, canvas apps, file uploads and CAPTCHAs are not
   handled. Controls inside iframes are; scrolling inside an iframe is not.
+- Links inside closed menus are offered only once a run is stuck on a page, and one level deep: a submenu inside a
+  menu is not opened.
 - `done` is the model's judgement. Check what matters.
 - Jet only types words that appear in your goal (unless you configure a text model), so write the values into it.
 

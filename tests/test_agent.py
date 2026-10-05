@@ -7,6 +7,9 @@ from clearcote_jet.browser import StalePage
 
 SCROLL = {"id": "scroll_down", "kind": "scroll", "label": "Scroll down", "delta": 560}
 FIELD = {"id": "e1", "node": 1, "kind": "fill", "role": "textbox", "label": "Reader number", "value": ""}
+# A link inside a closed menu, as Session.observe(menus=True) offers it: `menu` is the node that opens the menu.
+MENU_LINK = {"id": "e2", "node": 7, "kind": "click", "role": "link", "value": "", "menu": 3,
+             "label": "Docs › Recommended settings"}
 MARKDOWN = "\n\n".join(f"## Section {i}\n\nBody text of section number {i} goes here." for i in range(20))
 
 
@@ -23,14 +26,15 @@ class Session:
     direct = False
     closed = False
 
-    def __init__(self, fresh=True, stale_acts=0, screen="Body text of section number 2 goes here."):
+    def __init__(self, fresh=True, stale_acts=0, screen="Body text of section number 2 goes here.", menu_links=()):
         self.fresh_result, self.stale_acts, self.screen = fresh, stale_acts, screen
-        self.observes, self.acts = 0, []
+        self.observes, self.acts, self.menu_links, self.menu_observes = 0, [], list(menu_links), 0
 
-    async def observe(self, page, after=None):
+    async def observe(self, page, after=None, menus=False):
         self.observes += 1
+        self.menu_observes += menus
         return {"url": Page.url, "title": "Item", "text": f"{self.screen}\nclock {self.observes}",
-                "actions": [FIELD, SCROLL], "marker": str(self.observes)}
+                "actions": [FIELD, *(self.menu_links if menus else []), SCROLL], "marker": str(self.observes)}
 
     async def fresh(self, page, state, action=None):
         return self.fresh_result
@@ -59,10 +63,11 @@ def decision(operation, action=None):
 
 def script(monkeypatch, *steps):
     """The model's answers in order; the last one repeats. Returns the call counters."""
-    calls = {"choose": 0, "rank": [], "value": 0}
+    calls = {"choose": 0, "rank": [], "value": 0, "seen": []}
 
     async def choose(state, goal, history):
         calls["choose"] += 1
+        calls["seen"].append([a["label"] for a in state["actions"]])  # what each decision was offered
         return steps[min(calls["choose"], len(steps)) - 1]
 
     async def rank_blocks(goal, blocks):
@@ -112,3 +117,38 @@ def test_ranking_covers_the_final_screen_and_is_skipped_when_not_done(monkeypatc
     result = asyncio.run(agent.run(Session(), "goal", page=Page()))
     assert result["status"] == "blocked" and calls["rank"] == [] and result["block_scores"] == []
     assert result["markdown"].startswith("## Section 0") and result["usage"]["requests"] == 1
+
+
+def test_blocked_looks_inside_the_closed_menus_before_giving_up(monkeypatch):
+    calls = script(monkeypatch, decision("BLOCKED"), decision("CLICK", MENU_LINK), decision("DONE"))
+    session = Session(menu_links=[MENU_LINK])
+    result = asyncio.run(agent.run(session, "Find the recommended settings", page=Page()))
+    assert result["status"] == "done" and session.acts == [("click", None)]
+    assert MENU_LINK["label"] not in calls["seen"][0] and MENU_LINK["label"] in calls["seen"][1]
+    assert result["trace"][0]["action"] == "Docs › Recommended settings"
+    assert result["stale"] == []  # looking inside the menus is not a page that changed
+
+
+def test_a_page_without_menu_links_ends_blocked_as_before(monkeypatch):
+    calls = script(monkeypatch, decision("BLOCKED"))
+    session = Session()
+    result = asyncio.run(agent.run(session, "goal", page=Page()))
+    assert result["status"] == "blocked" and calls["choose"] == 1  # nothing new to decide on: no second request
+    assert session.menu_observes == 1 and result["usage"]["requests"] == 1
+
+
+def test_the_menus_are_looked_inside_once_per_page(monkeypatch):
+    calls = script(monkeypatch, decision("BLOCKED"))
+    result = asyncio.run(agent.run(Session(menu_links=[MENU_LINK]), "goal", page=Page()))
+    assert result["status"] == "blocked" and calls["choose"] == 2  # BLOCKED again with the menus offered: it stands
+
+
+def test_three_scrolls_in_a_row_offer_the_menus(monkeypatch):
+    scroll = decision("SCROLL_DOWN", SCROLL)
+    calls = script(monkeypatch, scroll, scroll, scroll, decision("CLICK", MENU_LINK), decision("DONE"))
+    session = Session(menu_links=[MENU_LINK])
+    result = asyncio.run(agent.run(session, "Find the recommended settings", page=Page()))
+    offered = [MENU_LINK["label"] in seen for seen in calls["seen"]]
+    assert offered == [False, False, False, True, True]  # once the run is searching, and from then on on that page
+    assert result["status"] == "done" and session.acts == [("scroll", None)] * 3 + [("click", None)]
+    assert questions.MENU_SCROLL_STREAK == 3

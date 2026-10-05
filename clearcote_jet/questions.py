@@ -52,3 +52,5 @@ MAX_STEPS = 60
 # Scrolling this many times in a row ends the run as blocked: a goal reached by scrolling is reached long before, and
 # without a stop a long document can use every remaining step (each one a full decision request).
 MAX_SCROLL_STREAK = 12
+# After this many scrolls in a row on one page, the links inside its closed menus are offered too (agent.py).
+MENU_SCROLL_STREAK = 3

@@ -97,6 +97,67 @@
     e.dispatchEvent(new Event('change',{bubbles:true}));
     return true;
   };
+  // Links inside closed menus (navigation dropdowns, menu panels, collapsed <details>) are hidden, so they are never
+  // among the actions below. The agent asks for them only when it is stuck on a page; each one names its trigger
+  // (`menu`), the visible control the executor hovers or clicks to open the menu before clicking the link.
+  cache.menus=()=>{
+    const shown=e=>{
+      if (!visible(e)) return false;
+      const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
+      if (!r.width || !r.height) return false;
+      if (x<0 || y<0 || x>=innerWidth || y>=innerHeight) return true; // laid out further away: scrolling reaches it
+      return e.contains(deepPoint(x,y)); // clipped by a collapsed panel, or under something
+    };
+    const usable=t=>!!t && visible(t) && !t.matches(':disabled') && !t.closest('[aria-disabled="true"]');
+    const pairs=[]; // [trigger, the part of the page it opens]
+    for (const t of deepAll('[aria-expanded="false"],[aria-haspopup]:not([aria-haspopup="false"]):not([aria-expanded])')) {
+      if (!usable(t) || ['INPUT','SELECT','TEXTAREA'].includes(t.tagName) || t.getAttribute('role')==='combobox') continue;
+      const panels=(t.getAttribute('aria-controls')||'').split(/\s+/).filter(Boolean).map(id=>byId(t,id)).filter(Boolean);
+      for (const p of panels.length ? panels : [t.closest('li') || t.parentElement]) if (p) pairs.push([t,p]);
+    }
+    for (const d of deepAll('details:not([open])')) {
+      const s=d.querySelector(':scope > summary');
+      if (usable(s)) pairs.push([s,d]);
+    }
+    // Menus that open on hover with no ARIA at all (li:hover > ul): the list item's own visible control opens it.
+    for (const a of deepAll('nav a[href],header a[href],[role="navigation"] a[href],[role="menubar"] a[href]')) {
+      if (shown(a)) continue;
+      let li=a.parentElement?.closest('li');
+      while (li && !visible(li)) li=li.parentElement?.closest('li');
+      const t=li && [...li.children].find(c=>!c.contains(a) && usable(c) && c.getBoundingClientRect().height>0);
+      if (t) pairs.push([t,li]);
+    }
+    const out=[], taken=new Set();
+    for (const [t,panel] of pairs) {
+      const menu=(name(t)||'Menu').replace(/\s+/g,' ').trim().slice(0,60);
+      for (const e of panel.querySelectorAll('a[href],[role="menuitem"],[role="link"]')) {
+        if (taken.has(e) || e.contains(t) || !safe(e) || e.matches(':disabled') || shown(e)) continue;
+        const rname=role(e), label=name(e).replace(/\s+/g,' ').trim();
+        if (!['link','menuitem'].includes(rname) || !label) continue;
+        taken.add(e);
+        // menu_link: the trigger is itself a link (a hover menu's top item), so clicking it would leave the page.
+        out.push({node:identity(e),role:rname,kind:'click',value:'',menu:identity(t),menu_link:t.matches('a[href]'),
+          label:(menu+' › '+label).slice(0,200),guard:JSON.stringify(cache.guard(e))});
+        if (out.length>=60) return out;
+      }
+    }
+    return out;
+  };
+  // Where the pointer goes first on its way from a menu's trigger to a link in the open menu: straight down from the
+  // trigger, inside the menu's panel, to the link's row; then across to the link. A person moves like that, and it
+  // keeps the pointer inside the menu: a diagonal can slip off it (menus close soon after the pointer leaves) or cross
+  // a neighbouring menu's trigger (which opens that menu instead). The panel is the link's highest ancestor that does
+  // not contain the trigger.
+  cache.waypoint=(trigger,id)=>{
+    const t=cache.nodes.get(trigger), e=cache.nodes.get(id);
+    if (!t?.isConnected || !e?.isConnected) return null;
+    let p=e;
+    while (p.parentElement && !p.parentElement.contains(t)) p=p.parentElement;
+    const a=t.getBoundingClientRect(), r=p.getBoundingClientRect(), l=e.getBoundingClientRect();
+    if (!r.width || !r.height || p===e) return null;
+    const clamp=(v,lo,hi)=>Math.min(Math.max(v,lo),Math.max(lo,hi));
+    return {x:clamp(a.x+a.width/2,r.left+8,r.right-8), y:clamp(l.y+l.height/2,r.top+8,r.bottom-8)};
+  };
   const actions=[];
   for (const e of deepAll(selector)) {
     if (!safe(e) || !visible(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
