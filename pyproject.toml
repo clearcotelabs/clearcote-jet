@@ -1,6 +1,6 @@
 [project]
 name = "clearcote-jet"
-version = "0.1.0"
+version = "0.2.0"
 description = "Goal-driven browser agent for Clearcote: a fast decision model picks each step, Clearcote carries it out with human-paced input. MCP server, CLI and Python API."
 readme = "README.md"
 license = "MIT"
