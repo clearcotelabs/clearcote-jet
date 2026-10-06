@@ -30,7 +30,9 @@ def check(ok, what):
 
 async def main():
     profile = Path(tempfile.mkdtemp(prefix="ccagent-stdio-", dir=HERE))
-    env = dict(os.environ, CLEARCOTE_JET_PROFILE=str(profile), CLEARCOTE_JET_HEADLESS="1")
+    # the fixture is a local file: allowed only with the private-address guard off
+    env = dict(os.environ, CLEARCOTE_JET_PROFILE=str(profile), CLEARCOTE_JET_HEADLESS="1",
+               CLEARCOTE_JET_ALLOW_PRIVATE_EGRESS="1")
     params = StdioServerParameters(command=sys.executable, args=["-m", "clearcote_jet.mcp_server"], env=env)
     try:
         async with stdio_client(params) as (read, write):

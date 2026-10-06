@@ -45,6 +45,7 @@ async def main():
     load_env_file(HERE.parent.parent / ".env")
     profile = Path(tempfile.mkdtemp(prefix="ccagent-mcp-", dir=HERE))
     os.environ["CLEARCOTE_JET_PROFILE"] = str(profile)
+    os.environ["CLEARCOTE_JET_ALLOW_PRIVATE_EGRESS"] = "1"  # the fixture is a local file
     try:
         view = await mcp_server.snapshot(url=FIXTURE)
         print("  elements:", elements(view), flush=True)

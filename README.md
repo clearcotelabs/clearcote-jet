@@ -165,10 +165,15 @@ Screenshots are taken without touching the page's DOM; one over 200 KB is saved 
 instead of the image.
 
 Guard rails: every tool carries MCP annotations (`snapshot` and `list_skills` only read; `browse` and `act` can change
-things on websites), so a client can decide which calls need your approval. A url on this machine, the local network
-or a cloud metadata address is refused unless `CLEARCOTE_JET_ALLOW_PRIVATE_EGRESS=1`. Every call has a time limit
-(the tab stays open when it runs out), and page content comes back inside an `<untrusted_page_content>` block that the
-page itself cannot close.
+things on websites), so a client can decide which calls need your approval. Only `http`/`https` urls are accepted,
+read the way the browser reads them, and this machine, the local network and cloud metadata addresses are refused:
+for the url a tool gets and for every request the browser then makes (redirects, images, frames, script requests,
+popups), unless `CLEARCOTE_JET_ALLOW_PRIVATE_EGRESS=1` (needed for `file:` pages and local servers too). Checking
+every request turns the browser's HTTP cache off. Not covered: WebSocket connections a page script opens, a host
+name whose address changes between the check and the browser's own lookup (DNS rebinding), a redirect in the very
+first load of a popup, and redirects of requests made inside workers or cross-site frames. Every call has a time
+limit (typing gets extra time per character; the tab stays open when it runs out), and page content, the title
+included, comes back inside an `<untrusted_page_content>` block that nothing on the page can close or imitate.
 
 ### Settings
 
@@ -186,9 +191,10 @@ Put them in `.env` (see `.env.example`) or the environment:
 | `CLEARCOTE_JET_CDP` | unset | attach to a browser that is already running |
 | `CLEARCOTE_JET_IDLE_MINUTES` | `5` | MCP server: close the browser after this long without calls |
 | `CLEARCOTE_JET_TASK_TIMEOUT` | `900` | MCP server: seconds a `browse` call may run before it is stopped |
-| `CLEARCOTE_JET_TOOL_TIMEOUT` | `120` | MCP server: the same for every other call |
-| `CLEARCOTE_JET_ALLOW_PRIVATE_EGRESS` | off | MCP server: `1` allows urls on this machine or the local network |
-| `CLEARCOTE_JET_SCREENSHOTS` | `~/.clearcote-jet/screenshots` | MCP server: where a screenshot too big to send inline is saved |
+| `CLEARCOTE_JET_TOOL_TIMEOUT` | `120` | MCP server: the same for every other call (`act` gets 0.5 s more for each character it types) |
+| `CLEARCOTE_JET_ALLOW_PRIVATE_EGRESS` | off | MCP server: `1` allows urls on this machine or the local network, and `file:` urls |
+| `CLEARCOTE_JET_INLINE_IMAGE_MAX` | `200000` | MCP server: the largest screenshot (bytes) sent as an image; a bigger one is saved to a file |
+| `CLEARCOTE_JET_SCREENSHOTS` | `~/.clearcote-jet/screenshots` | MCP server: where those are saved; the newest 20 are kept |
 | `CLEARCOTE_JET_SKILLS` | `~/.clearcote-jet/skills` | where learned tasks are kept, one JSON file each |
 | `CLEARCOTE_JET_USD_PER_MTOK` | `0.042` | rate used for the cost estimate |
 
