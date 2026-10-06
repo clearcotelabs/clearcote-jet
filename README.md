@@ -161,7 +161,14 @@ When `browse` stops (`blocked`, `needs_input`), the assistant can look with `sna
 back to `browse(goal, tab_id=...)`. `act` returns the new snapshot, so steps chain; if what a step depends on changed
 since the snapshot, it does nothing and answers `stale`. Tabs stay open between calls, several tasks can run at once in
 their own tabs (a second call on a busy tab answers `busy`), and the browser shuts itself down after a few idle minutes.
-Screenshots are taken without touching the page's DOM.
+Screenshots are taken without touching the page's DOM; one over 200 KB is saved to a file and its path returned
+instead of the image.
+
+Guard rails: every tool carries MCP annotations (`snapshot` and `list_skills` only read; `browse` and `act` can change
+things on websites), so a client can decide which calls need your approval. A url on this machine, the local network
+or a cloud metadata address is refused unless `CLEARCOTE_JET_ALLOW_PRIVATE_EGRESS=1`. Every call has a time limit
+(the tab stays open when it runs out), and page content comes back inside an `<untrusted_page_content>` block that the
+page itself cannot close.
 
 ### Settings
 
@@ -178,6 +185,10 @@ Put them in `.env` (see `.env.example`) or the environment:
 | `CLEARCOTE_JET_HUMANIZE` | on | `0` switches to instant clicks and typing |
 | `CLEARCOTE_JET_CDP` | unset | attach to a browser that is already running |
 | `CLEARCOTE_JET_IDLE_MINUTES` | `5` | MCP server: close the browser after this long without calls |
+| `CLEARCOTE_JET_TASK_TIMEOUT` | `900` | MCP server: seconds a `browse` call may run before it is stopped |
+| `CLEARCOTE_JET_TOOL_TIMEOUT` | `120` | MCP server: the same for every other call |
+| `CLEARCOTE_JET_ALLOW_PRIVATE_EGRESS` | off | MCP server: `1` allows urls on this machine or the local network |
+| `CLEARCOTE_JET_SCREENSHOTS` | `~/.clearcote-jet/screenshots` | MCP server: where a screenshot too big to send inline is saved |
 | `CLEARCOTE_JET_SKILLS` | `~/.clearcote-jet/skills` | where learned tasks are kept, one JSON file each |
 | `CLEARCOTE_JET_USD_PER_MTOK` | `0.042` | rate used for the cost estimate |
 
@@ -247,6 +258,7 @@ python tests/e2e/check_full_loop.py        # the whole loop with a stand-in for 
 python tests/e2e/check_frames.py           # controls inside same-site and cross-site iframes
 python tests/e2e/check_mcp_tools.py        # snapshot and act on a local form (one live step if a key is set)
 python tests/e2e/check_mcp_stdio.py        # the MCP server over stdio, as an assistant runs it
+python tests/e2e/check_mcp_hardening.py    # annotations, refused local urls, time limits, big screenshots to a file
 python tests/e2e/check_skills.py           # learn, replay, repair, lists, the request shortcut, confirm and find
 ```
 
