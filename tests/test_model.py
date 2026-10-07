@@ -247,9 +247,10 @@ def test_mcp_format_shows_probabilities_alternatives_and_stale():
                    "probability": 0.94, "alternatives": [("Place a hold", 0.05)]}],
     }
     out = _format("t1", result)
-    assert "1. click 'Borrow this copy'  p=0.94 ['Place a hold' p=0.05]" in out
+    assert ("1. click <untrusted_page_content>Borrow this copy</untrusted_page_content>  p=0.94 "
+            "[<untrusted_page_content>Place a hold</untrusted_page_content> p=0.05]") in out  # labels come from the page
     assert "stale retries" in out and "moved" in out
-    assert out.index("</untrusted_page_content>") > out.index("md")
+    assert out.rindex("</untrusted_page_content>") > out.index("\nmd\n")
 
 
 def test_resolve_redirects_decodes_clear_text_google_links_without_network():

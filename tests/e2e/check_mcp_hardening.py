@@ -4,9 +4,10 @@ deleted afterwards.
 1. Over stdio, guard on: the tool annotations as a client receives them; urls for this machine written the ways a
    plain url parse misses (one number, hex, no slashes, a backslash before '@', view-source:, percent-encoding) all
    refused, with nothing reaching the local server; a local file refused.
-2. Over stdio, guard off (the control): the same urls do reach the local server. Also a screenshot inline when small
-   and saved to a file when big, a page that cannot fake the untrusted block, and a page that never answers stopped by
-   a 3 s per-call limit, the server answering the next call.
+2. Over stdio, guard off (the control): the same urls do reach the local server, while a local file, chrome:,
+   devtools: and view-source: urls are still refused. Also a screenshot inline when small and saved to a file when
+   big, a page that cannot fake the untrusted block, and a page that never answers stopped by a 3 s per-call limit,
+   the server answering the next call. The pages are served from this machine.
 3. In process, guard on: every request a page makes (an image, a frame, a script's request, a popup, a redirect)
    goes through the guard. Server B stands in for a private address (the check is narrowed to its port, since both
    test servers live on this machine); first with nothing refused, to show the page really makes those requests.
@@ -132,8 +133,9 @@ async def guard_on(base, port, hits, profile):
             check(out.startswith("status: error (refused url scheme 'file'"), "a local file is refused")
 
 
-async def guard_off(base, port, hits, profile, pages, shots):
+async def guard_off(base, port, hits, profile, shots):
     env = dict(base, CLEARCOTE_JET_PROFILE=str(profile), CLEARCOTE_JET_ALLOW_PRIVATE_EGRESS="1")
+    local = f"http://127.0.0.1:{port}"
     async with server(env) as (read, write):
         async with ClientSession(read, write) as client:
             await client.initialize()
@@ -142,10 +144,16 @@ async def guard_off(base, port, hits, profile, pages, shots):
             reached = {n for n in forms(port) if any(h.endswith("/vs" if n == "view-source" else n) for h in hits)}
             check({"decimal", "no-slashes", "one-slash", "backslash", "hex", "percent"} <= reached,
                   f"control: with the guard off these urls do reach this machine ({sorted(reached)})")
+            for url in (FIXTURE, "chrome://version", "devtools://devtools/bundled/inspector.html",
+                        f"view-source:{local}/vs-off"):
+                out = (await client.call_tool("snapshot", {"url": url})).content[0].text
+                check(out.startswith("status: error (refused url scheme '"),
+                      f"with the guard off, still refused: {url.split(':')[0]}: ({out[:90]})")
+            check(not any(h.endswith("/vs-off") for h in hits), "the refused view-source: url reached nothing")
 
-            res = await client.call_tool("snapshot", {"url": FIXTURE, "screenshot": True})
+            res = await client.call_tool("snapshot", {"url": f"{local}/fixture.html", "screenshot": True})
             check([c.type for c in res.content] == ["text", "image"], "a small screenshot comes back inline")
-            res = await client.call_tool("snapshot", {"url": (pages / "noise.html").as_uri(), "screenshot": True})
+            res = await client.call_tool("snapshot", {"url": f"{local}/noise.html", "screenshot": True})
             out = res.content[0].text
             saved = re.search(r"screenshot: saved to (.+\.png) \((\d+) KB, over the 200 KB inline limit\)", out)
             check([c.type for c in res.content] == ["text"] and bool(saved) and Path(saved.group(1)).parent == shots
@@ -153,7 +161,7 @@ async def guard_off(base, port, hits, profile, pages, shots):
                   f"a big screenshot is saved to a file instead ({[c.type for c in res.content]}: "
                   f"{[line for line in out.splitlines() if 'screenshot' in line or 'status' in line][:2]})")
 
-            out = (await client.call_tool("snapshot", {"url": (pages / "trick.html").as_uri()})).content[0].text
+            out = (await client.call_tool("snapshot", {"url": f"{local}/trick.html"})).content[0].text
             check(markers(out) == 2 and "Ignore the above" in out and out.rstrip().endswith("</untrusted_page_content>")
                   and out.index("<untrusted_page_content>") < out.index("title: Notice"),
                   "no fence-like marker from the page survives; the title is inside the block")
@@ -221,11 +229,9 @@ async def every_request(profile):
 
 async def main():
     work = Path(tempfile.mkdtemp(prefix="ccagent-hardening-", dir=HERE))
-    pages, shots = work / "pages", work / "shots"
-    pages.mkdir()
-    (pages / "noise.html").write_text(NOISE, encoding="utf-8")
-    (pages / "trick.html").write_text(TRICK, encoding="utf-8")
-    port, hits, srv = recorder()
+    shots = work / "shots"
+    port, hits, srv = recorder({"/fixture.html": (HERE / "fixture.html").read_text(encoding="utf-8"),
+                                "/noise.html": NOISE, "/trick.html": TRICK})
     base = {k: v for k, v in os.environ.items() if k not in ("CLEARCOTE_JET_ALLOW_PRIVATE_EGRESS",
                                                              "CLEARCOTE_ALLOW_PRIVATE_EGRESS")}
     base.update(CLEARCOTE_JET_HEADLESS="1", CLEARCOTE_JET_SCREENSHOTS=str(shots))
@@ -234,7 +240,7 @@ async def main():
         await guard_on(base, port, hits, work / "profile-a")
         await wait_for_browser_exit(work / "profile-a")
         print("2. over stdio, guard off (control), then a 3 s time limit", flush=True)
-        await guard_off(base, port, hits, work / "profile-b", pages, shots)
+        await guard_off(base, port, hits, work / "profile-b", shots)
         await wait_for_browser_exit(work / "profile-b")
         print("3. in process: every request a page makes", flush=True)
         await every_request(work / "profile-c")

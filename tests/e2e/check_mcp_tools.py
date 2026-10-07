@@ -8,11 +8,14 @@ The profile dir is deleted afterwards.
 """
 
 import asyncio
+import functools
 import os
 import re
 import shutil
 import sys
 import tempfile
+import threading
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from mcp.server.mcpserver import Image
@@ -21,9 +24,20 @@ from clearcote_jet import mcp_server
 from clearcote_jet.cli import load_env_file
 
 HERE = Path(__file__).parent
-FIXTURE = (HERE / "fixture.html").resolve().as_uri()
 PIN = "Zq9-library-pin"  # typed into the password field
 failures = []
+
+
+class Quiet(SimpleHTTPRequestHandler):
+    def log_message(self, *_a):
+        pass
+
+
+def serve_here():
+    """This directory over http on 127.0.0.1 (only http and https urls are opened)."""
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Quiet, directory=str(HERE)))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, f"http://127.0.0.1:{srv.server_address[1]}/fixture.html"
 
 
 def check(ok, what):
@@ -45,7 +59,8 @@ async def main():
     load_env_file(HERE.parent.parent / ".env")
     profile = Path(tempfile.mkdtemp(prefix="ccagent-mcp-", dir=HERE))
     os.environ["CLEARCOTE_JET_PROFILE"] = str(profile)
-    os.environ["CLEARCOTE_JET_ALLOW_PRIVATE_EGRESS"] = "1"  # the fixture is a local file
+    os.environ["CLEARCOTE_JET_ALLOW_PRIVATE_EGRESS"] = "1"  # the fixture is served from this machine
+    srv, FIXTURE = serve_here()
     try:
         view = await mcp_server.snapshot(url=FIXTURE)
         print("  elements:", elements(view), flush=True)
@@ -116,6 +131,7 @@ async def main():
     finally:
         if mcp_server.browser.session:
             await mcp_server.browser.session.close()
+        srv.shutdown()
         for _ in range(20):
             shutil.rmtree(profile, ignore_errors=True)
             if not profile.exists():
