@@ -161,22 +161,24 @@ When `browse` stops (`blocked`, `needs_input`), the assistant can look with `sna
 back to `browse(goal, tab_id=...)`. `act` returns the new snapshot, so steps chain; if what a step depends on changed
 since the snapshot, it does nothing and answers `stale`. Tabs stay open between calls, several tasks can run at once in
 their own tabs (a second call on a busy tab answers `busy`), and the browser shuts itself down after a few idle minutes.
-It also closes when the server stops (its input closed, Ctrl+C, Ctrl+Break, SIGTERM or SIGHUP), so no browser or
-temporary files are left behind. Screenshots are taken without touching the page's DOM; one over 200 KB is saved to a file and its path returned
+It also closes, with its temporary files, when the server stops (its input closed, Ctrl+C, Ctrl+Break, SIGTERM or
+SIGHUP); not after a forced kill of the server, and on Windows a Ctrl+Break also ends Playwright's driver at once,
+which leaves its `playwright-artifacts-*` folder in the temp directory. Screenshots are taken without touching the page's DOM; one over 200 KB is saved to a file and its path returned
 instead of the image.
 
 Guard rails: every tool carries MCP annotations (`snapshot` and `list_skills` only read; `browse` and `act` can change
 things on websites), so a client can decide which calls need your approval. Only `http`/`https` urls are accepted,
 read the way the browser reads them (`file:`, `view-source:`, `chrome:` and every other scheme are refused, always),
 and this machine, the local network and cloud metadata addresses are refused: for the url a tool gets and for every
-request the browser then makes (redirects, images, frames, script requests, popups), unless
-`CLEARCOTE_JET_ALLOW_PRIVATE_EGRESS=1` (needed for local servers). Checking every request turns the browser's HTTP
+request the browser then makes (redirects, images, frames, script requests, popups; the browser's own `chrome:` and
+`chrome-extension:` resources, such as its PDF viewer's, pass), unless `CLEARCOTE_JET_ALLOW_PRIVATE_EGRESS=1` (needed
+for local servers). Checking every request turns the browser's HTTP
 cache off. Not covered: WebSocket connections a page script opens, a host name whose address changes between the
 check and the browser's own lookup (DNS rebinding), a redirect in the very first load of a popup, and redirects of
 requests made inside workers or cross-site frames. Every call has a time limit (typing gets extra time per character;
 the tab stays open when it runs out), and page content comes back between `<untrusted_page_content>` tags that nothing
-on the page can close or imitate: the text and title in one block, and every element label (and any status detail
-that quotes one) in tags of its own.
+on the page can close or imitate: the text and title in one block, and every element label (also where a status
+detail or a progress message quotes one) in tags of its own.
 
 ### Settings
 

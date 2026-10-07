@@ -3,8 +3,9 @@
 Tabs stay open so the user can see the result, and a task that stopped can be taken over: `snapshot` shows a tab as
 the agent sees it and `act` does one step in it. The browser closes after CLEARCOTE_JET_IDLE_MINUTES without calls
 (frees the license seat) and relaunches on the next call. It also closes, with its Playwright driver, whenever the
-server stops: its stdin closed, Ctrl+C, Ctrl+Break (Windows), SIGTERM or SIGHUP, or an error, so nothing of it is left
-running or behind in the temp directory.
+server stops: its stdin closed, Ctrl+C, Ctrl+Break (Windows), SIGTERM or SIGHUP, or an error. Not after a forced kill
+of the server; and on Windows a Ctrl+Break also ends Playwright's driver at once, which leaves its artifacts folder in
+the temp directory.
 
 Env: TYPESAFE_API_KEY, TEXT_MODEL_* (see model.field_text), plus
   CLEARCOTE_JET_CDP=http://127.0.0.1:9222  attach to a running browser instead of launching one
@@ -47,7 +48,7 @@ from mcp.types import ToolAnnotations
 from .agent import run, step
 from .browser import DEFAULT_PROFILE, Session, StalePage
 from .cli import load_env_file
-from .describe import norm
+from .describe import Quote, Said, norm
 from . import egress
 from .egress import EgressRefused, check_url, guard_context, guard_redirects, private_allowed
 from .untrusted import defuse, fence, fence_inline
@@ -58,7 +59,8 @@ from .skills import SkillStore, run_with_skill
 log = logging.getLogger("clearcote-jet")  # stdio transport: stdout is the protocol, logs go to stderr
 CLOSE_SECONDS = 20  # the longest a stopping server waits for its browser to close
 EXIT_GRACE = 2  # after a stop signal and the browser's close: seconds to finish on its own before it leaves anyway
-closed_on_stop = threading.Event()  # set once a stopping server has closed its browser (see _lifespan and main)
+closed_on_stop = threading.Event()  # set once this run of the server has closed its browser (see _lifespan, main)
+exiting = threading.Lock()  # held by whichever exit goes first: the server's own, or _leave_once_closed's
 
 
 @contextlib.asynccontextmanager
@@ -66,6 +68,7 @@ async def _lifespan(_server):
     """The server's whole run. However it ends (stdin closed, a stop signal, an error), the browser and its Playwright
     driver are closed first. Left to itself, the driver closes the browser only when it outlives the server: when it
     is ended with the server, the browser's artifacts folder in temp and the licence's run token stay behind."""
+    closed_on_stop.clear()
     try:
         yield
     finally:
@@ -213,8 +216,11 @@ class Browser:
         try:
             await session.close()
             log.info("browser closed: the server is stopping")
-        except Exception:
-            log.exception("closing the browser failed")
+        except Exception as e:
+            if "Connection closed" in str(e):  # Ctrl+C reached Playwright's driver too, and it closed the browser
+                log.info("browser already closed by its driver: the server is stopping")
+            else:
+                log.exception("closing the browser failed")
 
     def _gone(self, tab_id):
         self.tabs.pop(tab_id, None)
@@ -304,6 +310,14 @@ def _page(text):
     return fence_inline(str(text))
 
 
+def _said(text):
+    """A status detail, a skill's note or a stale retry: Jet's own words as they are, and what they quote from the
+    page between the fence tags (see describe.Said). Text that is not a Said is swept for fence-like markers."""
+    if isinstance(text, Said):
+        return "".join(_page(part) if isinstance(part, Quote) else part for part in text.parts)
+    return defuse(str(text))
+
+
 def _typed(text):
     return defuse(repr(text))  # the caller's own text, or the model's reading of it
 
@@ -316,14 +330,15 @@ def _alternatives(alternatives):
 def _format(tab_id, result):
     skill = result.get("skill") or {}
     items = result.get("items") or []
-    # The details, the steps' labels and the stale retries can quote the page: each sits between the fence tags.
+    # Page text in the details, the steps' labels and the stale retries sits between the fence tags; Jet's own
+    # words around it do not.
     lines = [
-        f"status: {result['status']}" + (f" ({_page(result['detail'])})" if result["detail"] else ""),
+        f"status: {result['status']}" + (f" ({_said(result['detail'])})" if result["detail"] else ""),
         f"tab_id: {tab_id} (still open)" if tab_id else "tab: closed",
         defuse(f"url: {result['url']}"),
         f"steps: {result['actions']} actions, {result['decisions']} decisions, {result['elapsed_ms']} ms, "
         f"{(result.get('usage') or {}).get('requests', 0)} model requests",
-        *([f"skill: {SKILL_SAYS[skill['used']].format(because=_page(skill.get('because')))}"]
+        *([f"skill: {SKILL_SAYS[skill['used']].format(because=_said(skill.get('because')))}"]
           if skill.get("used") else []),
         "actions taken (p = the model's probability for the chosen target; runner-ups in brackets):",
         *(
@@ -331,7 +346,7 @@ def _format(tab_id, result):
             + ("  (replayed)" if h.get("replayed") else f"  p={h['probability']}") + _alternatives(h["alternatives"])
             for h in result["trace"]
         ),
-        *(["stale retries (page changed before acting):", *(f"  - {_page(s)}" for s in result["stale"])]
+        *(["stale retries (page changed before acting):", *(f"  - {_said(s)}" for s in result["stale"])]
           if result["stale"] else []),
         "",
     ]
@@ -427,8 +442,8 @@ async def browse(goal: str, ctx: Context, url: str | None = None, tab_id: str | 
         async with browser.use(tab_id, url) as (session, tab_id, tab):
 
             async def report(done):  # progress notifications; MCP logging is deprecated (SEP-2577)
-                await ctx.report_progress(done["step"], message=f"{done['kind']} {done['action'][:60]}"
-                                          + (f" = {done['text']!r}" if done["text"] else ""))
+                await ctx.report_progress(done["step"], message=f"{done['kind']} {_page(done['action'][:60])}"
+                                          + (f" = {_typed(done['text'])}" if done["text"] else ""))
 
             tab.view = None  # the task moves the page on: act needs a new snapshot afterwards
             if reuse and new_task:
@@ -567,10 +582,14 @@ def _stop_signals():
 def _leave_once_closed(signum):
     """After a stop signal: the stdio transport still waits for its stdin reader, a thread blocked on a read that may
     never return (a client that keeps the pipe open). Once the browser is closed, give the server EXIT_GRACE seconds
-    to finish on its own, then leave without that thread (the exit handlers still run)."""
+    to finish on its own, then leave without that thread (the exit handlers still run, once: not when the server's
+    own exit has begun)."""
     closed_on_stop.wait(CLOSE_SECONDS + 10)
     time.sleep(EXIT_GRACE)
-    log.info("leaving without waiting for stdin")
+    if not exiting.acquire(blocking=False):
+        return  # the server is leaving by itself
+    with contextlib.suppress(Exception):
+        log.info("leaving without waiting for stdin")
     atexit._run_exitfuncs()
     os._exit(128 + signum)
 
@@ -584,12 +603,13 @@ async def _serve():
     with anyio.CancelScope() as scope:
         def stop(signum, _frame):
             if stopped:
-                log.info("already stopping: the browser is being closed")
                 return
             stopped.append(signum)
-            log.info("stopping on %s: closing the browser", signal.Signals(signum).name)
             loop.call_soon_threadsafe(scope.cancel)
             threading.Thread(target=_leave_once_closed, args=(signum,), daemon=True).start()
+            # last: a signal that lands inside another write to stderr makes this one raise
+            with contextlib.suppress(Exception):
+                log.info("stopping on %s: closing the browser", signal.Signals(signum).name)
 
         previous = {sig: signal.signal(sig, stop) for sig in _stop_signals()}
         try:
@@ -605,6 +625,8 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)  # one INFO line per model call is noise
     signum = anyio.run(_serve)
+    if not exiting.acquire(blocking=False):  # _leave_once_closed is already leaving: let it
+        threading.Event().wait()
     if signum:
         sys.exit(128 + signum)
 

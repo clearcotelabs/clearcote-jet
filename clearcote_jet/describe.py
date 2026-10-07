@@ -17,6 +17,28 @@ CONSENT = re.compile(
     r"recusar|aceitar|odrzuć|akceptuj)\b", re.I)
 
 
+class Quote(str):
+    """Text from the page (an element's label, a sample of what changed) that a message quotes: in repr quotes, or as
+    it is when `bare`."""
+
+    def __new__(cls, text, bare=False):
+        self = super().__new__(cls, text)
+        self.bare = bare
+        return self
+
+
+class Said(str):
+    """A message made of Jet's own words and Quotes from the page. As a str it reads as it always has; `parts` keeps
+    the two apart, so a reply can mark the page's text as the page's (the MCP server fences it) and leave Jet's own
+    words as they are."""
+
+    def __new__(cls, *parts):
+        self = super().__new__(cls, "".join(
+            (str(p) if p.bare else repr(str(p))) if isinstance(p, Quote) else p for p in parts))
+        self.parts = parts
+        return self
+
+
 def norm(text):
     return re.sub(r"\s+", " ", (text or "").strip().lower())
 

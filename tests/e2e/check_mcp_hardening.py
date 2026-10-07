@@ -11,6 +11,9 @@ deleted afterwards.
 3. In process, guard on: every request a page makes (an image, a frame, a script's request, a popup, a redirect)
    goes through the guard. Server B stands in for a private address (the check is narrowed to its port, since both
    test servers live on this machine); first with nothing refused, to show the page really makes those requests.
+4. In process, the real request guard on: a PDF shows in the browser's PDF viewer, an extension that loads its own
+   chrome-extension: and chrome: resources. The local server plays a public one (the address check lets 127.0.0.1
+   through for this part).
 """
 
 import asyncio
@@ -83,9 +86,11 @@ def recorder(pages=None):
                 self.end_headers()
                 return
             body = (pages or {}).get(self.path, "<!doctype html><html><head><title>Local</title></head><body>"
-                                                "<p>A local page with a few words on it.</p></body></html>").encode()
+                                                "<p>A local page with a few words on it.</p></body></html>")
+            kind = "application/pdf" if isinstance(body, bytes) else "text/html"
+            body = body if isinstance(body, bytes) else body.encode()
             self.send_response(200)
-            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Type", kind)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -227,6 +232,58 @@ async def every_request(profile):
         srv_b.shutdown()
 
 
+def one_page_pdf(text):
+    """A one-page PDF that shows `text`."""
+    stream = f"BT /F1 36 Tf 72 700 Td ({text}) Tj ET".encode()
+    objects = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+               b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+               b"/Resources << /Font << /F1 5 0 R >> >> >>",
+               b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream",
+               b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+    out, offsets = bytearray(b"%PDF-1.4\n"), []
+    for number, body in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % number + body + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1) + b"".join(b"%010d 00000 n \n" % o for o in offsets)
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, xref)
+    return bytes(out)
+
+
+async def pdf_viewer(profile):
+    os.environ.update(CLEARCOTE_JET_PROFILE=str(profile), CLEARCOTE_JET_HEADLESS="1")
+    for var in ("CLEARCOTE_JET_ALLOW_PRIVATE_EGRESS", "CLEARCOTE_ALLOW_PRIVATE_EGRESS"):
+        os.environ.pop(var, None)
+    port, _hits, srv = recorder({"/hours.pdf": one_page_pdf("Opening hours")})
+    real = egress.host_refusal
+
+    async def public_here(host):  # the address check, narrowed for this part; the scheme rules are the real ones
+        return None if host == "127.0.0.1" else await real(host)
+    egress.host_refusal = public_here
+    del egress.refused[:]
+    try:
+        await mcp_server.snapshot(url=f"http://127.0.0.1:{port}/hours.pdf")
+        page = next(iter(mcp_server.browser.tabs.values())).page
+        viewer = False
+        for _ in range(50):  # the viewer starts in a frame of its own
+            for frame in page.frames:
+                if frame.url.startswith("chrome-extension://"):
+                    try:
+                        viewer = await frame.evaluate("() => !!customElements.get('pdf-viewer')")
+                    except Exception:
+                        pass
+            if viewer:
+                break
+            await asyncio.sleep(0.2)
+        refused = [url[:80] for url, _ in egress.refused]
+        check(refused == [], f"nothing the PDF viewer loads is refused ({refused[:3]})")
+        check(viewer, "the PDF viewer shows the PDF")
+    finally:
+        egress.host_refusal = real
+        await mcp_server.browser.shutdown()
+        srv.shutdown()
+
+
 async def main():
     work = Path(tempfile.mkdtemp(prefix="ccagent-hardening-", dir=HERE))
     shots = work / "shots"
@@ -242,7 +299,9 @@ async def main():
         print("2. over stdio, guard off (control), then a 3 s time limit", flush=True)
         await guard_off(base, port, hits, work / "profile-b", shots)
         await wait_for_browser_exit(work / "profile-b")
-        print("3. in process: every request a page makes", flush=True)
+        print("3. in process: a PDF shows in the browser's PDF viewer with the request guard on", flush=True)
+        await pdf_viewer(work / "profile-d")
+        print("4. in process: every request a page makes", flush=True)
         await every_request(work / "profile-c")
     finally:
         srv.shutdown()

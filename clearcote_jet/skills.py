@@ -23,7 +23,7 @@ from urllib.parse import urlsplit
 
 from .agent import run
 from .browser import StalePage
-from .describe import CONSENT, irreversible, named, norm, shape, target_info
+from .describe import CONSENT, Quote, Said, irreversible, named, norm, shape, target_info
 from .model import screen_anchor, split_chunks
 from .shortcut import rows_from_json
 
@@ -192,12 +192,14 @@ async def replay(session, skill, page, on_step=None, confirm=False):
             if action is None:
                 if step.get("optional") or already_chosen(step, state["actions"]):
                     continue
-                status, detail = "diverged", f"step {i + 1} ({step['kind']} {step['label'][:60]!r}) is not on the page"
+                status, detail = "diverged", Said(f"step {i + 1} ({step['kind']} ", Quote(step["label"][:60]),
+                                                  ") is not on the page")
                 break
             if confirm and irreversible(action):
                 status, pending = "needs_confirmation", {"kind": action["kind"], "label": action["label"],
                                                          "role": action.get("role")}
-                detail = f"stopped before {action['label'][:80]!r}, which can't be taken back: confirm to go ahead"
+                detail = Said("stopped before ", Quote(action["label"][:80]),
+                              ", which can't be taken back: confirm to go ahead")
                 break
             try:
                 await session.act(page, state, action, step.get("text"))
@@ -209,7 +211,8 @@ async def replay(session, skill, page, on_step=None, confirm=False):
                         raise StalePage("gone")
                     await session.act(page, state, action, step.get("text"))
                 except StalePage:
-                    status, detail = "diverged", f"step {i + 1} ({step['label'][:60]!r}) kept changing under the replay"
+                    status, detail = "diverged", Said(f"step {i + 1} (", Quote(step["label"][:60]),
+                                                      ") kept changing under the replay")
                     break
             new_state = await session.observe(page, after=action)
             trace.append({"step": len(trace) + 1, "action": action["label"], "kind": action["kind"],

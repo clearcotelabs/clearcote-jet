@@ -529,3 +529,39 @@ def test_browse_lists_the_rows_it_read(monkeypatch, server):
     assert "results on the page (3, read without a model):" in out
     assert "- Blue kettle · €24,50 · https://shop.example/p/1" in out
     assert out.index("results on the page") > out.index("<untrusted_page_content>")
+
+
+# --- what the page said, inside the fence; Jet's own words, as they are --------------------------------------------
+
+def test_a_stop_before_a_click_fences_only_its_label(monkeypatch, server):
+    model(monkeypatch, *PLAN)
+    out = asyncio.run(mcp_server.browse("Request a loan", Ctx(), url=START, confirm=True, reuse=False))
+    assert out.startswith("status: needs_confirmation (stopped before <untrusted_page_content>Send request"
+                          "</untrusted_page_content>, which can't be taken back: confirm to go ahead)\n")
+
+
+def test_a_repaired_skill_says_why_with_only_the_old_label_fenced(monkeypatch, tmp_path):
+    store = SkillStore(tmp_path)
+    _, skill = learn(monkeypatch, store)
+    model(monkeypatch, ("CLICK", "Submit request"), ("DONE", None))
+    result = asyncio.run(run_with_skill(Form(send="Submit request"), skill["goal"], url=START, page=Page(), store=store))
+    assert result["skill"]["because"] == "step 3 (click 'Send request') is not on the page"  # as a str, as before
+    line = next(x for x in mcp_server._format("t1", result).splitlines() if x.startswith("skill: "))
+    assert line.startswith("skill: the saved skill no longer matched (step 3 (click <untrusted_page_content>Send "
+                           "request</untrusted_page_content>) is not on the page); "), line
+
+
+class Progress:
+    def __init__(self):
+        self.messages = []
+
+    async def report_progress(self, done, total=None, message=None):
+        self.messages.append(message)
+
+
+def test_progress_names_each_element_inside_the_fence(monkeypatch, server):
+    model(monkeypatch, *PLAN)
+    ctx = Progress()
+    asyncio.run(mcp_server.browse("Request a loan", ctx, url=START, reuse=False))
+    assert "fill <untrusted_page_content>Reader number</untrusted_page_content> = 'A-4417'" in ctx.messages, ctx.messages
+    assert "click <untrusted_page_content>Send request</untrusted_page_content>" in ctx.messages, ctx.messages

@@ -6,7 +6,7 @@ import time
 from playwright.async_api import Error as PlaywrightError
 
 from .browser import BrowserClosed, StalePage
-from .describe import best_list, end_lines, irreversible, target_info
+from .describe import Quote, Said, best_list, end_lines, irreversible, target_info
 from .model import (MAX_RANKED_BLOCKS, NeedsInput, add_usage, choose, estimate_usd, field_context, field_text,
                     page_view, rank_blocks, resolve, resolve_redirects, screen_anchor, split_chunks)
 from .questions import MAX_SCROLL_STREAK, MAX_STEPS, MENU_SCROLL_STREAK
@@ -81,8 +81,8 @@ async def run(session, goal, url=None, page=None, on_step=None, history=None, co
                 # widgets, live counters): deciding again would cost another full request for the same answer.
                 if verdict != (operation, state["url"]) and not await session.fresh(page, state):
                     verdict = (operation, state["url"])
-                    stale.append(f"{ms()}ms {operation}: page changed before completion"
-                                 f" [{getattr(session, 'last_diff', '')}]")  # what changed
+                    stale.append(Said(f"{ms()}ms {operation}: page changed before completion [",
+                                      Quote(getattr(session, "last_diff", ""), bare=True), "]"))  # what changed
                     state = await look()
                     continue
                 status = operation.lower()
@@ -91,7 +91,8 @@ async def run(session, goal, url=None, page=None, on_step=None, history=None, co
             if confirm and irreversible(action):
                 status, pending = "needs_confirmation", {"kind": action["kind"], "label": action["label"],
                                                          "role": action.get("role")}
-                detail = f"stopped before {action['label'][:80]!r}, which can't be taken back: confirm to go ahead"
+                detail = Said("stopped before ", Quote(action["label"][:80]),
+                              ", which can't be taken back: confirm to go ahead")
                 break
             text = text_info = None
             try:
@@ -114,11 +115,11 @@ async def run(session, goal, url=None, page=None, on_step=None, history=None, co
                 if action["kind"] == "find":  # the goal names no place to jump to: nothing happens, the loop sees that
                     pending_text, text = None, None
                 else:
-                    status, detail = "needs_input", f"No value in the goal for field: {e}"
+                    status, detail = "needs_input", Said("No value in the goal for field: ", Quote(str(e), bare=True))
                     break
             except StalePage as e:
-                stale.append(f"{ms()}ms {action['kind']} {action['label'][:40]!r}: {e}"
-                             f" [{getattr(session, 'last_diff', '')}]")  # what changed
+                stale.append(Said(f"{ms()}ms {action['kind']} ", Quote(action["label"][:40]), f": {e} [",
+                                  Quote(getattr(session, "last_diff", ""), bare=True), "]"))  # what changed
                 state = await look()
                 continue
             pending_text = None
