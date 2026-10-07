@@ -1,6 +1,7 @@
 """Shared by the tests that run Playwright's own Chromium."""
 
 import asyncio
+import os
 import shutil
 import tempfile
 from contextlib import asynccontextmanager
@@ -12,8 +13,8 @@ from playwright.async_api import async_playwright
 
 @asynccontextmanager
 async def launch_chromium():
-    """Playwright's own headless Chromium, closed afterwards. Skips the test where it is not installed (CI): run
-    `python -m playwright install chromium` to include it.
+    """Playwright's own headless Chromium, closed afterwards. Skips the test where it is not installed: run
+    `python -m playwright install chromium` to include it. With JET_REQUIRE_CHROMIUM=1 (CI) that is a failure instead.
 
     Playwright's driver, and the browser it starts, keep their temp files in a directory of their own, removed at the
     end. A launch makes a profile and an artifacts directory in temp before it looks for the browser, and leaves both
@@ -28,7 +29,10 @@ async def launch_chromium():
             try:
                 browser = await pw.chromium.launch(headless=True)
             except PlaywrightError as e:
-                pytest.skip(f"no Playwright Chromium: {str(e).splitlines()[0]}")
+                missing = f"no Playwright Chromium: {str(e).splitlines()[0]}"
+                if os.environ.get("JET_REQUIRE_CHROMIUM") == "1":
+                    pytest.fail(missing)
+                pytest.skip(missing)
             try:
                 yield browser
             finally:

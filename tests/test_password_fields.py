@@ -1,5 +1,5 @@
 """Password fields through the real snapshot.js and executor, in Playwright's own Chromium: offered as fields to type
-into, never read. No Clearcote, no network, no model calls. Skipped where no Chromium is installed (CI), see
+into, never read. No Clearcote, no network, no model calls. Skipped where no Chromium is installed, see
 conftest.py."""
 
 import asyncio

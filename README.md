@@ -258,7 +258,8 @@ Built for privacy, testing, research and lawful automation.
 
 ```bash
 pip install -e . pytest ruff
-ruff check . && pytest tests -q            # offline: no browser, no model calls
+python -m playwright install chromium      # optional: the tests that need a browser use it, else they skip
+ruff check . && pytest tests -q            # offline: no network, no model calls
 python tests/e2e/check_browser_layer.py    # visible browser, scripted steps, a local test page
 python tests/e2e/check_full_loop.py        # the whole loop with a stand-in for the model
 python tests/e2e/check_frames.py           # controls inside same-site and cross-site iframes

@@ -1,6 +1,6 @@
 """Controls scrolled out of view inside a scroll box of their own, through the real snapshot.js and executor, in
 Playwright's own Chromium: left out of a plain snapshot, offered (with the menus) named by their group, and clicked
-after wheeling over their box. No Clearcote, no network, no model calls. Skipped where no Chromium is installed (CI),
+after wheeling over their box. No Clearcote, no network, no model calls. Skipped where no Chromium is installed,
 see conftest.py."""
 
 import asyncio

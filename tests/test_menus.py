@@ -1,6 +1,6 @@
 """Links inside closed menus through the real snapshot.js and executor, in Playwright's own Chromium: left out of a plain
 snapshot, offered with their trigger when asked, and clicked after the menu is opened the way a person opens it. No
-Clearcote, no network, no model calls. Skipped where no Chromium is installed (CI), see conftest.py."""
+Clearcote, no network, no model calls. Skipped where no Chromium is installed, see conftest.py."""
 
 import asyncio
 

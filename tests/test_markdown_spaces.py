@@ -1,5 +1,5 @@
 """markdown.js keeps the spaces that live in whitespace-only text nodes, in Playwright's own Chromium. No Clearcote, no
-network, no model calls. Skipped where no Chromium is installed (CI), see conftest.py."""
+network, no model calls. Skipped where no Chromium is installed, see conftest.py."""
 
 import asyncio
 

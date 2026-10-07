@@ -17,9 +17,14 @@ jobs:
         run: |
           pip install -e . pytest ruff
           ruff check .
+      - name: Playwright's headless Chromium (for the tests that drive a real page)
+        run: python -m playwright install --with-deps --only-shell chromium
       # The tests run with a temp directory of their own and must leave it as they found it (pytest's own
-      # pytest-of-* excepted): a browser profile or artifacts folder left there is a leak.
-      - name: Unit tests (offline, no browser, no model calls; must leave their temp directory empty)
+      # pytest-of-* excepted): a browser profile or artifacts folder left there is a leak. JET_REQUIRE_CHROMIUM makes a
+      # browser test fail, not skip, when Chromium cannot start.
+      - name: Unit tests (offline, no model calls; must leave their temp directory empty)
+        env:
+          JET_REQUIRE_CHROMIUM: "1"
         run: |
           export TMPDIR="$RUNNER_TEMP/jet-test-tmp"
           mkdir -p "$TMPDIR"
