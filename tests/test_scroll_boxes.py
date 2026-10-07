@@ -1,13 +1,11 @@
 """Controls scrolled out of view inside a scroll box of their own, through the real snapshot.js and executor, in
 Playwright's own Chromium: left out of a plain snapshot, offered (with the menus) named by their group, and clicked
-after wheeling over their box. No Clearcote, no network, no model calls. Skipped where no Chromium is installed (CI):
-run `python -m playwright install chromium` to include it."""
+after wheeling over their box. No Clearcote, no network, no model calls. Skipped where no Chromium is installed (CI),
+see conftest.py."""
 
 import asyncio
 
 import pytest
-from playwright.async_api import Error as PlaywrightError
-from playwright.async_api import async_playwright
 
 from clearcote_jet import agent
 from clearcote_jet.browser import Session
@@ -74,29 +72,19 @@ async def click_in_box(session, page, label):
     return {"clicks": await page.evaluate("clicks"), "boxes": await page.evaluate(BOXES)}
 
 
-async def scenario(humanize):
-    async with async_playwright() as pw:
-        try:
-            browser = await pw.chromium.launch(headless=True)
-        except PlaywrightError as e:
-            return str(e).splitlines()[0]
-        try:
-            session = Session(await browser.new_context(viewport={"width": 420, "height": 450}), humanize=humanize)
-            page = await session.new_tab()
-            await page.set_content(PHONE)
-            seen = {"plain": await session.observe(page), "menus": await session.observe(page, menus=True)}
-            seen["clicked"] = {label: await click_in_box(session, page, label) for label in TARGETS}
-            return seen
-        finally:
-            await browser.close()
+async def scenario(humanize, chromium):
+    async with chromium() as browser:
+        session = Session(await browser.new_context(viewport={"width": 420, "height": 450}), humanize=humanize)
+        page = await session.new_tab()
+        await page.set_content(PHONE)
+        seen = {"plain": await session.observe(page), "menus": await session.observe(page, menus=True)}
+        seen["clicked"] = {label: await click_in_box(session, page, label) for label in TARGETS}
+        return seen
 
 
 @pytest.fixture(scope="module", params=[False, True], ids=["plain", "humanize"])
-def seen(request):
-    result = asyncio.run(scenario(request.param))
-    if isinstance(result, str):
-        pytest.skip(f"no Playwright Chromium: {result}")
-    return result
+def seen(request, chromium):
+    return asyncio.run(scenario(request.param, chromium))
 
 
 def test_a_plain_snapshot_leaves_what_a_scroll_box_hides_out(seen):
@@ -130,7 +118,7 @@ def test_the_wheel_scrolls_the_box_itself_not_a_smaller_one_inside_it(seen):
     assert news > 0 and drawer == 0
 
 
-def test_a_stuck_run_finds_a_link_scrolled_away_in_the_phone_menu(monkeypatch):
+def test_a_stuck_run_finds_a_link_scrolled_away_in_the_phone_menu(monkeypatch, chromium):
     """The whole loop on the real page: the model sees no way on and says BLOCKED; the run offers what the drawer
     hides, the model picks the link there, and the executor wheels the drawer and clicks it."""
     offered = []
@@ -141,32 +129,25 @@ def test_a_stuck_run_finds_a_link_scrolled_away_in_the_phone_menu(monkeypatch):
                 "usage": {"input_tokens": 1000}, "latency_ms": 1}
 
     async def run():
-        async with async_playwright() as pw:
-            try:
-                browser = await pw.chromium.launch(headless=True)
-            except PlaywrightError as e:
-                pytest.skip(f"no Playwright Chromium: {str(e).splitlines()[0]}")
-            try:
-                session = Session(await browser.new_context(viewport={"width": 420, "height": 450}), humanize=False)
-                page = await session.new_tab()
-                await page.set_content(PHONE)
+        async with chromium() as browser:
+            session = Session(await browser.new_context(viewport={"width": 420, "height": 450}), humanize=False)
+            page = await session.new_tab()
+            await page.set_content(PHONE)
 
-                async def choose(state, goal, history):
-                    offered.append(labels(state))
-                    if await page.evaluate("clicks.length"):
-                        return decision("DONE")
-                    link = next((a for a in state["actions"] if a["label"] == "Docs › Recommended settings"), None)
-                    return decision("CLICK", link) if link else decision("BLOCKED")
+            async def choose(state, goal, history):
+                offered.append(labels(state))
+                if await page.evaluate("clicks.length"):
+                    return decision("DONE")
+                link = next((a for a in state["actions"] if a["label"] == "Docs › Recommended settings"), None)
+                return decision("CLICK", link) if link else decision("BLOCKED")
 
-                async def rank_blocks(goal, blocks):
-                    return [0.9] * len(blocks), {"input_tokens": 10}
+            async def rank_blocks(goal, blocks):
+                return [0.9] * len(blocks), {"input_tokens": 10}
 
-                monkeypatch.setattr(agent, "choose", choose)
-                monkeypatch.setattr(agent, "rank_blocks", rank_blocks)
-                result = await agent.run(session, "Find the recommended settings", page=page)
-                return result, await page.evaluate("clicks")
-            finally:
-                await browser.close()
+            monkeypatch.setattr(agent, "choose", choose)
+            monkeypatch.setattr(agent, "rank_blocks", rank_blocks)
+            result = await agent.run(session, "Find the recommended settings", page=page)
+            return result, await page.evaluate("clicks")
 
     result, clicks = asyncio.run(run())
     assert result["status"] == "done" and clicks == [["#recommended", True]]

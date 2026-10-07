@@ -1,13 +1,11 @@
 """Password fields through the real snapshot.js and executor, in Playwright's own Chromium: offered as fields to type
-into, never read. No Clearcote, no network, no model calls. Skipped where no Chromium is installed (CI): run
-`python -m playwright install chromium` to include it."""
+into, never read. No Clearcote, no network, no model calls. Skipped where no Chromium is installed (CI), see
+conftest.py."""
 
 import asyncio
 import json
 
 import pytest
-from playwright.async_api import Error as PlaywrightError
-from playwright.async_api import async_playwright
 
 from clearcote_jet import model
 from clearcote_jet.browser import Session
@@ -37,46 +35,36 @@ def leaks(state, session=None):
     return [v for v in (TYPED, PRESET, "hidden-token-value") if v in out]
 
 
-async def scenario():
-    async with async_playwright() as pw:
-        try:
-            browser = await pw.chromium.launch(headless=True)
-        except PlaywrightError as e:
-            return str(e).splitlines()[0]
-        try:
-            session = Session(await browser.new_context(), humanize=False)
-            page = await session.new_tab()
-            await page.set_content(FORM)
-            seen = {}
+async def scenario(chromium):
+    async with chromium() as browser:
+        session = Session(await browser.new_context(), humanize=False)
+        page = await session.new_tab()
+        await page.set_content(FORM)
+        seen = {}
 
-            state = seen["empty"] = await session.observe(page)
-            field = pick(state, "fill", "Password")
-            await session.act(page, state, field, TYPED)
-            seen["typed_in_page"] = await page.input_value("#pw")
-            state = seen["filled"] = await session.observe(page, after=field)
-            seen["filled_diff"] = await session.fresh(page, seen["empty"]) or session.last_diff
-            seen["filled_leaks"] = leaks(state, session)
-            seen["markdown"] = await session.markdown(page)
+        state = seen["empty"] = await session.observe(page)
+        field = pick(state, "fill", "Password")
+        await session.act(page, state, field, TYPED)
+        seen["typed_in_page"] = await page.input_value("#pw")
+        state = seen["filled"] = await session.observe(page, after=field)
+        seen["filled_diff"] = await session.fresh(page, seen["empty"]) or session.last_diff
+        seen["filled_leaks"] = leaks(state, session)
+        seen["markdown"] = await session.markdown(page)
 
-            show = pick(state, "click", "Show password")
-            await session.act(page, state, show)
-            seen["type_after_show"] = await page.eval_on_selector("#pw", "e => e.type")
-            state = seen["shown"] = await session.observe(page, after=show)
-            await page.eval_on_selector("#pin", "e => { e.value = ''; }")
-            seen["shown_diff"] = await session.fresh(page, state) or session.last_diff
-            seen["shown_leaks"] = leaks(state, session)
-            seen["cleared"] = await session.observe(page)
-            return seen
-        finally:
-            await browser.close()
+        show = pick(state, "click", "Show password")
+        await session.act(page, state, show)
+        seen["type_after_show"] = await page.eval_on_selector("#pw", "e => e.type")
+        state = seen["shown"] = await session.observe(page, after=show)
+        await page.eval_on_selector("#pin", "e => { e.value = ''; }")
+        seen["shown_diff"] = await session.fresh(page, state) or session.last_diff
+        seen["shown_leaks"] = leaks(state, session)
+        seen["cleared"] = await session.observe(page)
+        return seen
 
 
 @pytest.fixture(scope="module")
-def seen():
-    result = asyncio.run(scenario())
-    if isinstance(result, str):
-        pytest.skip(f"no Playwright Chromium: {result}")
-    return result
+def seen(chromium):
+    return asyncio.run(scenario(chromium))
 
 
 def test_a_password_field_is_offered_to_type_into_with_no_value(seen):

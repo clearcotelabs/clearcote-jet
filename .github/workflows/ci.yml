@@ -13,8 +13,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Lint and unit tests (offline, no browser, no model calls)
+      - name: Lint
         run: |
           pip install -e . pytest ruff
           ruff check .
+      # The tests run with a temp directory of their own and must leave it as they found it (pytest's own
+      # pytest-of-* excepted): a browser profile or artifacts folder left there is a leak.
+      - name: Unit tests (offline, no browser, no model calls; must leave their temp directory empty)
+        run: |
+          export TMPDIR="$RUNNER_TEMP/jet-test-tmp"
+          mkdir -p "$TMPDIR"
           pytest tests -q
+          left="$(ls -A "$TMPDIR" | grep -v '^pytest-of-' || true)"
+          if [ -n "$left" ]; then echo "::error::the test run left these in its temp directory:"; echo "$left"; exit 1; fi

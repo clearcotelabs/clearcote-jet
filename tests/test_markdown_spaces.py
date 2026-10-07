@@ -1,11 +1,9 @@
 """markdown.js keeps the spaces that live in whitespace-only text nodes, in Playwright's own Chromium. No Clearcote, no
-network, no model calls. Skipped where no Chromium is installed (CI): run `python -m playwright install chromium`."""
+network, no model calls. Skipped where no Chromium is installed (CI), see conftest.py."""
 
 import asyncio
 
 import pytest
-from playwright.async_api import Error as PlaywrightError
-from playwright.async_api import async_playwright
 
 from clearcote_jet.browser import MARKDOWN_JS
 
@@ -17,26 +15,16 @@ PAGE = f"""<!doctype html><title>t</title><h1>Example Domain</h1><p>{PER_CHAR}</
     <li>two</li></ul>"""
 
 
-async def scenario():
-    async with async_playwright() as pw:
-        try:
-            browser = await pw.chromium.launch(headless=True)
-        except PlaywrightError as e:
-            return str(e).splitlines()[0]
-        try:
-            page = await browser.new_page()
-            await page.set_content(PAGE)
-            return {"md": await page.evaluate(MARKDOWN_JS)}
-        finally:
-            await browser.close()
+async def scenario(chromium):
+    async with chromium() as browser:
+        page = await browser.new_page()
+        await page.set_content(PAGE)
+        return {"md": await page.evaluate(MARKDOWN_JS)}
 
 
 @pytest.fixture(scope="module")
-def result():
-    out = asyncio.run(scenario())
-    if isinstance(out, str):
-        pytest.skip(f"no Playwright Chromium: {out}")
-    return out
+def result(chromium):
+    return asyncio.run(scenario(chromium))
 
 
 def test_per_character_spans_keep_their_spaces(result):
