@@ -23,7 +23,7 @@ from urllib.parse import urlsplit
 
 from .agent import run
 from .browser import StalePage
-from .describe import CONSENT, Quote, Said, irreversible, named, norm, shape, target_info
+from .describe import CONSENT, Quote, Said, irreversible, named, norm, plain, shape, target_info
 from .model import screen_anchor, split_chunks
 from .shortcut import rows_from_json
 
@@ -156,7 +156,7 @@ def _row_line(row):
     return "- " + " · ".join(str(row[k]) for k in ("title", "price", "link") if row.get(k))
 
 
-async def replay(session, skill, page, on_step=None, confirm=False):
+async def replay(session, skill, page, on_step=None, confirm=False, said=False):
     """Do a skill again with no model. -> a result like run()'s, with status:
     done: it read the results through the shortcut, or found every step and ended where the skill ended;
     needs_confirmation: `confirm` is on and the next step can't be taken back (it is not clicked);
@@ -239,7 +239,7 @@ async def replay(session, skill, page, on_step=None, confirm=False):
         markdown = "\n\n".join(chunks[start:start + 3])
         rows = rows if status == "done" else []
     elapsed = ms()
-    return {
+    result = {
         "status": status, "detail": detail, "url": page.url, "title": await page.title(), "elapsed_ms": elapsed,
         "actions": len(trace), "decisions": 0, "text_calls": 0,
         "timing": {"decide_ms": 0, "value_ms": 0, "browser_ms": elapsed},
@@ -250,9 +250,10 @@ async def replay(session, skill, page, on_step=None, confirm=False):
                   "learned_at": skill.get("learned_at"), "learned_with": skill.get("learned_with")},
         **({"pending": pending} if pending else {}),
     }
+    return result if said else plain(result)  # said: the messages as describe.Said, for the MCP server
 
 
-async def run_with_skill(session, goal, url=None, page=None, store=None, on_step=None, confirm=False):
+async def run_with_skill(session, goal, url=None, page=None, store=None, on_step=None, confirm=False, said=False):
     """run(), learned once: the first time a goal is run from a start page it is learned and saved as a skill; later
     times the skill is replayed with no model, and where the page changed the loop takes over and the skill is
     written again. result["skill"]["used"]: learned, replayed, shortcut or repaired.
@@ -262,16 +263,16 @@ async def run_with_skill(session, goal, url=None, page=None, store=None, on_step
     store = store or SkillStore()
     skill = store.get(goal, start_url)
     if skill:
-        result = await replay(session, skill, page, on_step=on_step, confirm=confirm)
+        result = await replay(session, skill, page, on_step=on_step, confirm=confirm, said=said)
         if result["status"] != "diverged":
             return result
         why = result["detail"]
         # the page changed since the skill was learned: the loop carries on from here, and the skill is written again
         result = await run(session, goal, page=page, on_step=on_step, history=result["trace"], confirm=confirm,
-                           learn=True)
+                           learn=True, said=said)
         result["skill"] = {"used": "repaired", "because": why}
     else:
-        result = await run(session, goal, page=page, on_step=on_step, confirm=confirm, learn=True)
+        result = await run(session, goal, page=page, on_step=on_step, confirm=confirm, learn=True, said=said)
         result["skill"] = {"used": "learned"}
     new = skill_from_run(goal, start_url, result)
     if new:

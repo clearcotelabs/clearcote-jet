@@ -39,6 +39,18 @@ class Said(str):
         return self
 
 
+def plain(result):
+    """`result` (a run's or a replay's) with its messages as plain str: the detail, the stale retries and a repaired
+    skill's reason. What the library hands out; only the MCP server asks for the Said parts (said=True)."""
+    out = dict(result)
+    if out.get("detail") is not None:
+        out["detail"] = str(out["detail"])
+    out["stale"] = [str(s) for s in out.get("stale") or []]
+    if (out.get("skill") or {}).get("because") is not None:
+        out["skill"] = {**out["skill"], "because": str(out["skill"]["because"])}
+    return out
+
+
 def norm(text):
     return re.sub(r"\s+", " ", (text or "").strip().lower())
 

@@ -6,7 +6,7 @@ import time
 from playwright.async_api import Error as PlaywrightError
 
 from .browser import BrowserClosed, StalePage
-from .describe import Quote, Said, best_list, end_lines, irreversible, target_info
+from .describe import Quote, Said, best_list, end_lines, irreversible, plain, target_info
 from .model import (MAX_RANKED_BLOCKS, NeedsInput, add_usage, choose, estimate_usd, field_context, field_text,
                     page_view, rank_blocks, resolve, resolve_redirects, screen_anchor, split_chunks)
 from .questions import MAX_SCROLL_STREAK, MAX_STEPS, MENU_SCROLL_STREAK
@@ -25,7 +25,8 @@ def _page_of(url):
     return (url or "").split("#", 1)[0]
 
 
-async def run(session, goal, url=None, page=None, on_step=None, history=None, confirm=False, learn=False):
+async def run(session, goal, url=None, page=None, on_step=None, history=None, confirm=False, learn=False,
+              said=False):
     """Run one goal in a tab. Returns a result dict; the tab is left open for the caller to close.
 
     history: steps already done in this tab (a replayed skill that lost its way), so the loop carries on from them.
@@ -188,7 +189,7 @@ async def run(session, goal, url=None, page=None, on_step=None, history=None, co
             await capture.stop()  # idempotent: also when the run ended early or with an error
     ranked = sorted(range(len(scores)), key=lambda i: -scores[i])
     keep = [i for i in ranked if scores[i] >= 0.5][:TOP_BLOCKS] or ranked[:3] or list(range(min(3, len(window))))
-    return {
+    result = {
         "status": status,
         "detail": detail,
         "url": page.url,
@@ -211,6 +212,7 @@ async def run(session, goal, url=None, page=None, on_step=None, history=None, co
         **({"pending": pending} if pending else {}),
         **({"learned": learned} if learned else {}),
     }
+    return result if said else plain(result)  # said: the messages as describe.Said, for the MCP server
 
 
 async def step(session, page, state=None, op=None, target=None, instruction=None, text=None):

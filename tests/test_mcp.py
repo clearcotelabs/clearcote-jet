@@ -520,6 +520,58 @@ def test_a_redirect_to_a_local_scheme_is_failed(location):
     assert cdp.sent[-1] == ("Fetch.failRequest", {"requestId": "r1", "errorReason": "BlockedByClient"})
 
 
+def redirect_verdict(location, start="https://8.8.8.8/start"):
+    """What the redirect hold answers for a 302 to `location`: Fetch.failRequest or Fetch.continueRequest."""
+    from clearcote_jet import egress
+    sent, handlers = [], {}
+
+    class CDP:
+        def on(self, event, handler):
+            handlers[event] = handler
+
+        async def send(self, method, params=None):
+            sent.append(method)
+
+    class Context:
+        async def new_cdp_session(self, page):
+            return CDP()
+
+    async def go():
+        await egress.guard_redirects(Context(), type("Page", (), {})())
+        handlers["Fetch.requestPaused"]({"requestId": "r1", "request": {"url": start}, "responseStatusCode": 302,
+                                         "responseHeaders": [{"name": "Location", "value": location}]})
+        for _ in range(200):
+            if sent[-1] != "Fetch.enable":
+                return sent[-1]
+            await asyncio.sleep(0.001)
+    return asyncio.run(go())
+
+
+# The browser reads a Location the way it reads any url: tabs and newlines dropped anywhere, then every C0 control
+# character and space trimmed from both ends (not U+007F, not a no-break space); what is left is absolute when it
+# starts with a scheme, and protocol-relative when it starts with two slashes (either way round).
+TRIMMED = ["\x01", "\x08", "\x0b", "\x0c", "\x1b", "\x1f", " \x01\t", "\x01 \x1f\x08", "\r\n\x02", ""]
+PRIVATE = ["http://127.0.0.2:8765/x", "//127.0.0.2:8765/x", "\\\\127.0.0.2:8765/x", "/\\169.254.169.254/latest",
+           "HTTP://[::1]/x", "http:127.0.0.2/x"]
+
+
+@pytest.mark.parametrize("before", TRIMMED)
+@pytest.mark.parametrize("target", PRIVATE)
+def test_a_redirect_padded_with_control_characters_is_judged_as_the_browser_reads_it(before, target):
+    for after in ("", "\x01", " \x1f"):
+        assert redirect_verdict(before + target + after) == "Fetch.failRequest", repr(before + target + after)
+
+
+@pytest.mark.parametrize("location,where", [
+    ("\x7fhttp://127.0.0.2/x", "https://8.8.8.8/start"),       # not trimmed: no scheme, a path on this host
+    ("\xa0http://127.0.0.2/x", "https://8.8.8.8/start"),       # a no-break space is not trimmed either
+    ("\x01/same/host", "https://8.8.8.8/start"), ("\x01https://8.8.4.4/next\x1f", "https://8.8.4.4/next"),
+    ("\x01//8.8.4.4/x", "https://8.8.4.4/x")])
+def test_a_location_resolves_where_the_browser_goes(location, where):
+    from clearcote_jet import egress
+    assert egress._redirect_target("https://8.8.8.8/start", location) == where
+
+
 @pytest.mark.parametrize("opt_in", ["", "1"])
 def test_the_browser_checks_every_request_unless_opted_out(monkeypatch, opt_in):
     routes = []
@@ -735,7 +787,7 @@ def test_jets_own_words_are_not_fenced(status, detail):
 
 
 def test_a_task_that_stops_before_a_click_names_it_inside_the_fence(session, monkeypatch):
-    async def run(session_, goal, page=None, on_step=None, confirm=False):
+    async def run(session_, goal, page=None, on_step=None, confirm=False, said=False):
         from clearcote_jet.describe import Quote, Said
         return {"status": "needs_confirmation", "pending": {"kind": "click", "label": "Send request"},
                 "detail": Said("stopped before ", Quote("Send request"), ", which can't be taken back: confirm to go "

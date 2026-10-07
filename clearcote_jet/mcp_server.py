@@ -448,9 +448,9 @@ async def browse(goal: str, ctx: Context, url: str | None = None, tab_id: str | 
             tab.view = None  # the task moves the page on: act needs a new snapshot afterwards
             if reuse and new_task:
                 result = await run_with_skill(session, goal, url=url, page=tab.page, store=SkillStore(),
-                                              on_step=report, confirm=confirm)
+                                              on_step=report, confirm=confirm, said=True)
             else:
-                result = await run(session, goal, page=tab.page, on_step=report, confirm=confirm)
+                result = await run(session, goal, page=tab.page, on_step=report, confirm=confirm, said=True)
             if session.is_gone(tab.page):  # closed or crashed mid-task: don't hand back a dead tab
                 return _format(None, result)
             reply = _format(tab_id, result)

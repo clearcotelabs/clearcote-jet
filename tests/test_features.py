@@ -544,11 +544,27 @@ def test_a_repaired_skill_says_why_with_only_the_old_label_fenced(monkeypatch, t
     store = SkillStore(tmp_path)
     _, skill = learn(monkeypatch, store)
     model(monkeypatch, ("CLICK", "Submit request"), ("DONE", None))
-    result = asyncio.run(run_with_skill(Form(send="Submit request"), skill["goal"], url=START, page=Page(), store=store))
+    result = asyncio.run(run_with_skill(Form(send="Submit request"), skill["goal"], url=START, page=Page(), store=store,
+                                        said=True))  # as the MCP server asks for it
     assert result["skill"]["because"] == "step 3 (click 'Send request') is not on the page"  # as a str, as before
     line = next(x for x in mcp_server._format("t1", result).splitlines() if x.startswith("skill: "))
     assert line.startswith("skill: the saved skill no longer matched (step 3 (click <untrusted_page_content>Send "
                            "request</untrusted_page_content>) is not on the page); "), line
+
+
+def test_the_library_hands_out_plain_strings(monkeypatch, tmp_path):
+    """A run's messages are plain str, exactly as before; only the MCP server asks for their parts."""
+    store = SkillStore(tmp_path)
+    _, skill = learn(monkeypatch, store)
+    model(monkeypatch, ("CLICK", "Submit request"), ("DONE", None))
+    result = asyncio.run(run_with_skill(Form(send="Submit request"), skill["goal"], url=START, page=Page(), store=store))
+    because = result["skill"]["because"]
+    assert type(because) is str and because == "step 3 (click 'Send request') is not on the page"
+    model(monkeypatch, *PLAN)
+    result = asyncio.run(agent.run(Form(), "Request a loan", page=Page(), confirm=True))
+    assert type(result["detail"]) is str
+    assert result["detail"] == "stopped before 'Send request', which can't be taken back: confirm to go ahead"
+    assert all(type(s) is str for s in result["stale"])
 
 
 class Progress:
