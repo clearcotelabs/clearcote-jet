@@ -44,6 +44,7 @@ from pathlib import Path
 import anyio
 from mcp.server.mcpserver import Context, Image, MCPServer
 from mcp.types import ToolAnnotations
+from playwright.async_api import Error as PlaywrightError
 
 from .agent import run, step
 from .browser import DEFAULT_PROFILE, Session, StalePage
@@ -107,11 +108,18 @@ REMOVES_LOCAL = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempo
 
 
 class ToolError(Exception):
-    """A call that could not run. args: the reason, then any extra lines; str() is the tool's reply."""
+    """A call that could not run. args: the reason, then any extra lines; `quoted`: an error the browser raised, which
+    can quote the page (an element's markup and text, what a page script threw), fenced below them. str() is the tool's
+    reply."""
+
+    def __init__(self, reason, *lines, quoted=None):
+        super().__init__(reason, *lines)
+        self.quoted = quoted
 
     def __str__(self):
         reason, *lines = self.args
-        return defuse("\n".join([f"status: error ({reason})", *lines]))  # page errors can carry page text
+        own = defuse("\n".join([f"status: error ({reason})", *lines]))  # a url or another error can carry page text
+        return own if self.quoted is None else "\n".join([own, *_untrusted(self.quoted)])
 
 
 def bounded(kind, typed=None):
@@ -278,8 +286,10 @@ class Browser:
                 raise ToolError(f"{reason} (reached through {blocked[:120]})",
                                 *([f"tab_id: {tab_id}"] if tab is not None else [])) from e
             log.exception("tool call failed")  # the tab stays open for inspection or a retry
-            raise ToolError(f"{type(e).__name__}: {e}",
-                            *([f"tab_id: {tab_id}", f"url: {tab.page.url}"] if tab is not None else [])) from e
+            where = [f"tab_id: {tab_id}", f"url: {tab.page.url}"] if tab is not None else []
+            if isinstance(e, PlaywrightError):  # its message can quote the page: fenced, as page content
+                raise ToolError(f"{type(e).__name__} from the browser", *where, quoted=str(e)) from e
+            raise ToolError(f"{type(e).__name__}: {e}", *where) from e
         finally:
             if tab is not None and session is not None and session.is_gone(tab.page):
                 self.tabs.pop(tab_id, None)  # closed or crashed: never hand it out again

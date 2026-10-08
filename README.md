@@ -177,8 +177,9 @@ cache off. Not covered: WebSocket connections a page script opens, a host name w
 check and the browser's own lookup (DNS rebinding), a redirect in the very first load of a popup, and redirects of
 requests made inside workers or cross-site frames. Every call has a time limit (typing gets extra time per character;
 the tab stays open when it runs out), and page content comes back between `<untrusted_page_content>` tags that nothing
-on the page can close or imitate: the text and title in one block, and every element label (also where a status
-detail or a progress message quotes one) in tags of its own.
+on the page can close or imitate: the text and title in one block, every element label (also where a status detail
+or a progress message quotes one) in tags of its own, and an error the browser raised, which can quote the page, in a
+block below the error's own lines.
 
 ### Settings
 
