@@ -34,6 +34,9 @@ SITE = """<!doctype html><title>Rail bookings</title>
   #hotels.open { display: block }
   #hotels li { cursor: pointer; padding: 6px }
   .card { cursor: pointer; padding: 10px; border: 1px solid #eee }
+  /* Some sites wrap a whole region in a positioned element; it is not a popup, and it is in the strip
+     under the fields. */
+  #shell { position: absolute; top: 240px; left: 0; width: 100%; height: 120px }
 </style>
 <div class="row">
   <div class="field">From<input id="from" placeholder="Station" autocomplete="off">
@@ -47,7 +50,7 @@ SITE = """<!doctype html><title>Rail bookings</title>
       <li role="option" id="hotel_0">Grand Hotel</li><li role="option" id="hotel_1">Grand Palace</li></ul></div>
   <button id="search">Search</button>
 </div>
-<div class="row">
+<div class="row" id="shell">
   <div class="card" id="card_a">Cheap fares</div>
   <div class="card" id="card_b">Travel insurance</div>
 </div>

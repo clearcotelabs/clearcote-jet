@@ -322,7 +322,16 @@
         const hit=deepPoint(x,y);
         if (!hit || hit===document.body || hit===document.documentElement || hit.contains(field)) continue;
         const p=popup(hit);
-        if (p && !p.contains(field) && visible(p)) panels.add(p);
+        if (!p || p.contains(field) || !visible(p) || panels.has(p)) continue;
+        // A suggestion popup hangs off the field: in its column, and its top edge at the field's bottom (or its
+        // bottom at the field's top). Positioned content further down the page is page content, not a popup — some
+        // sites wrap whole regions in a positioned element, and walking one would mean a computed style for every
+        // node in it on every snapshot.
+        const r=p.getBoundingClientRect();
+        if (r.right<=box.left || r.left>=box.right) continue;
+        if (!((r.top>=box.bottom-8 && r.top<=box.bottom+60) || (r.bottom<=box.top+8 && r.bottom>=box.top-60))) continue;
+        if (p.getElementsByTagName('*').length>400) continue;
+        panels.add(p);
       }
     }
     const rows=[], seen=new Set();
