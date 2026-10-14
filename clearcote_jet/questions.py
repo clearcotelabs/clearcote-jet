@@ -32,7 +32,9 @@ is already in the requested state."""
 
 ELEMENT_FORMAT = ('Each element: [index] role "label", then its current value=, state flags '
                   '(checked/selected/expanded; filled= on a password field, whose value is never shown), '
-                  'ops= the operations it supports (if absent: CLICK only), and options: for dropdowns.')
+                  'ops= the operations it supports (if absent: CLICK only), and options: for dropdowns. '
+                  'suggestions=N on a field means a list of N suggestions is open under it, offered as elements '
+                  'of their own: the typed text is not the chosen value until one of them is clicked.')
 
 TEXT_VALUE = """Return a JSON object with exactly one key, text: the exact string to enter in the selected field.
 Infer the value from the original goal and field meaning, using current page context and history.

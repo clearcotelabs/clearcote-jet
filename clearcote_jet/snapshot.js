@@ -228,7 +228,23 @@
     const clamp=(v,lo,hi)=>Math.min(Math.max(v,lo),Math.max(lo,hi));
     return {x:clamp(a.x+a.width/2,r.left+8,r.right-8), y:clamp(l.y+l.height/2,r.top+8,r.bottom-8)};
   };
+  // The words a person reads beside a control, when the control's own name does not tell it apart from another one
+  // ("Station" and "Station" are two fields a model cannot choose between; "From" and "To" are written right there).
+  // Its own container's short text, or that container's aria-label, up to three levels out.
+  const beside=e=>{
+    for (let p=e.parentElement, hops=0; p && hops<3 && p!==document.body; p=p.parentElement, hops++) {
+      const own=(p.getAttribute('aria-label')||'').replace(/\s+/g,' ').trim();
+      if (own) return own.slice(0,24);
+      // Its own words first, not its subtree's: a container whose field has just opened a suggestion popup would
+      // otherwise read as the whole popup, and the label would change under the model mid-run.
+      const mine=[...p.childNodes].filter(n=>n.nodeType===3).map(n=>n.textContent.trim()).filter(Boolean).join(' ');
+      const text=(mine || p.innerText || '').replace(/\s+/g,' ').trim();
+      if (text && text.length<=24) return text;
+    }
+    return '';
+  };
   const actions=[];
+  const picked=[];
   for (const e of deepAll(selector)) {
     if (!safe(e) || !visible(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
     const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2, rname=role(e);
@@ -236,7 +252,23 @@
     if (rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
     // Covered by a modal/overlay: a user cannot reach it, so it is not offered (the overlay's controls are).
     if (!e.contains(deepPoint(x,y))) continue;
-    const base={node:identity(e),role:rname,label:(name(e)||rname).replace(/\s+/g,' ').slice(0,200)};
+    picked.push({e,rname,label:(name(e)||rname).replace(/\s+/g,' ').slice(0,200)});
+  }
+  // Controls that read alike, told apart by what is written beside them — only where that actually differs, and only
+  // for the ones that have it: a label nothing distinguishes is left as it is rather than dressed up.
+  const alike=new Map();
+  for (const c of picked) (alike.get(c.label) || alike.set(c.label,[]).get(c.label)).push(c);
+  for (const group of alike.values()) {
+    if (group.length<2) continue;
+    for (const c of group) c.beside=beside(c.e);
+    const distinct=new Set(group.map(c=>c.beside).filter(Boolean));
+    if (distinct.size<2) continue;
+    for (const c of group)
+      if (c.beside && !c.label.toLowerCase().includes(c.beside.toLowerCase()))
+        c.label=(c.beside+' '+c.label).slice(0,200);
+  }
+  for (const {e,rname,label} of picked) {
+    const base={node:identity(e),role:rname,label};
     for (const key of ['checked','selected','expanded']) {
       const value=e.getAttribute('aria-'+key);
       if (value!==null) base[key]=value;
@@ -258,6 +290,72 @@
       if (editable) actions.push({...base,kind:'click',value,label:'Open '+base.label});
     }
   }
+  // The rows an old-style autocomplete opens under the field being typed into: plain elements with no role, no href
+  // and no tabindex, so nothing above offers them. They are not decoration — a site that keeps the real value in a
+  // hidden field (station and airport codes, address ids) selects nothing from the typed text alone, so a run that
+  // cannot click a row can only type the same words again until its budget runs out. Offered only while a text field
+  // has focus, which is the only time they exist: found by hit-testing the strip under (and over) that field, taken as
+  // the innermost thing there whose pointer cursor says it can be clicked, inside a popup that overlays the page.
+  const suggested=()=>{
+    const field=document.activeElement;
+    if (!field || field===document.body || !visible(field)) return [];
+    if (!(['INPUT','TEXTAREA'].includes(field.tagName) || field.isContentEditable)) return [];
+    if (field.tagName==='INPUT' && !['text','search','email','tel','url',''].includes(field.type)) return [];
+    const box=field.getBoundingClientRect();
+    if (!box.width || !box.height) return [];
+    const taken=new Set();
+    for (const a of actions) { const e=cache.nodes.get(a.node); if (e) taken.add(e); }
+    const popup=e=>{ // the overlay a suggestion row sits in: a positioned ancestor, not the page's own flow
+      for (let p=e, n=0; p && n<6 && p!==document.body; p=p.parentElement, n++)
+        if (['absolute','fixed'].includes(getComputedStyle(p).position)) return p;
+      return null;
+    };
+    const rows=[], seen=new Set();
+    const xs=[box.left+Math.min(24,box.width/2),box.left+box.width/2];
+    for (const dir of [1,-1]) for (let d=6; d<=420 && rows.length<12; d+=12) {
+      const y=dir>0 ? box.bottom+d : box.top-d;
+      if (y<0 || y>=innerHeight) break;
+      for (const x of xs) {
+        if (x<0 || x>=innerWidth) continue;
+        let row=deepPoint(x,y), hops=0;
+        while (row && hops<4 && row!==document.body && getComputedStyle(row).cursor!=='pointer') {
+          row=row.parentElement; hops++;
+        }
+        if (!row || row===document.body || row===document.documentElement) continue;
+        // The whole row, not the span inside it that the pointer happened to land on: climb while the parent is still
+        // one clickable row (pointer cursor, a row's size) holding no more text than this one.
+        for (let p=row.parentElement, up=0; p && up<3 && p!==document.body; p=p.parentElement, up++) {
+          const r=p.getBoundingClientRect(), t=(p.innerText||'').replace(/\s+/g,' ').trim();
+          if (getComputedStyle(p).cursor!=='pointer' || r.height>120 || t.length>80) break;
+          if (t.length>(row.innerText||'').replace(/\s+/g,' ').trim().length*1.5+10) break;  // it holds other rows too
+          row=p;
+        }
+        if (!row || row===document.body || row===document.documentElement) continue;
+        if (seen.has(row) || taken.has(row) || row.contains(field) || !visible(row)) continue;
+        // One row per element, and never a row inside a row already offered.
+        if ([...seen].some(s=>s.contains(row) || row.contains(s))) continue;
+        if (getComputedStyle(row).cursor!=='pointer' || !popup(row)) continue;
+        // Something already clickable inside it is already offered: that control is the way in, not this row.
+        if ([...row.querySelectorAll(selector)].some(c=>taken.has(c))) continue;
+        const r=row.getBoundingClientRect();
+        if (r.height>120 || r.width<20) continue;
+        const text=(row.innerText||'').replace(/\s+/g,' ').trim();
+        if (!text || text.length>80) continue;
+        seen.add(row);
+        rows.push({row,top:r.top,text});
+      }
+    }
+    const its=picked.find(c=>c.e===field);
+    const of=((its && its.label) || 'Suggestions').replace(/\s+/g,' ').trim().slice(0,60);
+    if (rows.length) {
+      // On the field itself, so the model is told what the page is doing: its typed text is not the value yet.
+      const id=identity(field);
+      for (const a of actions) if (a.node===id) a.suggestions=String(rows.length);
+    }
+    return rows.sort((a,b)=>a.top-b.top).map(({row,text})=>({node:identity(row),role:'option',kind:'click',value:'',
+      label:(of+' › '+text).slice(0,200),guard:JSON.stringify(cache.guard(row))}));
+  };
+  actions.push(...suggested());
   const words=[], range=document.createRange(); let node,length=0;
   for (const root of [document.body,...shadows]) {
     const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);

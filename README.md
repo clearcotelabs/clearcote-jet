@@ -256,7 +256,11 @@ Put them in `.env` (see `.env.example`) or the environment:
    (`Docs › Recommended settings`). To click one, it opens the menu the way a person does, pointing at it (or
    clicking it, if pointing opens nothing), moves down inside the menu and clicks the link. It lists, too, what is
    scrolled out of view inside a box that scrolls on its own (a phone menu's panel, a dialog, a side list, a row of
-   cards), which scrolling the page does not reach; it wheels over that box until the control is in view.
+   cards), which scrolling the page does not reach; it wheels over that box until the control is in view. While a
+   field is being typed into, it lists the rows of the suggestion list open under it, each named by its field
+   (`From Station › Chongqing 重庆`), even where those rows are plain elements with no role of their own — on a
+   picker that keeps the real value in a hidden field (station and airport codes, address ids), clicking a row is
+   the only thing that selects anything, and the field says so (`suggestions=3`) until one is picked.
 2. **Decide.** One request to the decision model picks the kind of step and the control together, with a probability for
    every option. The model only chooses from that list; it never writes code or coordinates.
 3. **Act.** Jet checks that the page has not changed, then moves the mouse along a curved path, clicks, and types key by
