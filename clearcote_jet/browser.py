@@ -24,6 +24,7 @@ SNAPSHOT_JS = (HERE / "snapshot.js").read_text(encoding="utf-8")
 MARKDOWN_JS = (HERE / "markdown.js").read_text(encoding="utf-8")
 LISTS_JS = (HERE / "lists.js").read_text(encoding="utf-8")
 EXTRACT_JS = (HERE / "extract.js").read_text(encoding="utf-8")  # %s: the list spec, as JSON
+CANDIDATES_JS = (HERE / "candidates.js").read_text(encoding="utf-8")  # %s: {row, max}, as JSON
 FIND_JS = (HERE / "find.js").read_text(encoding="utf-8")  # %s: the words, as JSON
 FIND_FLICKS = 12  # with no anchor to jump to, at most this many scrolls of about three screens each
 DEFAULT_PROFILE = Path.home() / ".clearcote-jet" / "profile"
@@ -667,6 +668,14 @@ class Session:
     async def extract(self, page, spec):
         """Rows of a list, read with a saved spec ({item, fields})."""
         return await self._eval(page, EXTRACT_JS % json.dumps(spec)) or []
+
+    async def candidates(self, page, row=None, max_candidates=60):
+        """Every value on the page something could be read from, each with a selector that finds it
+        again. With `row`, the candidates come from inside one row and their selectors are relative
+        to it. No model: this is what a model is later asked to choose among."""
+        spec = {"row": row, "max": max_candidates}
+        got = await self._eval(page, CANDIDATES_JS % json.dumps(spec))
+        return (got or {}).get("candidates", [])
 
     async def fetch_json(self, page, request):
         """Repeat a recorded JSON request from inside the page: the tab's own cookies and network, from the isolated

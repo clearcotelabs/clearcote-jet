@@ -1,5 +1,6 @@
 """clearcote-jet browser  → start a headed Clearcote browser with a CDP port and keep it running.
-clearcote-jet run      → run one goal (connects with --cdp, otherwise launches its own browser)."""
+clearcote-jet run      → run one goal (connects with --cdp, otherwise launches its own browser).
+clearcote-jet read     → work out a selector for values described in words, and read them."""
 
 import argparse
 import asyncio
@@ -8,7 +9,8 @@ import os
 from pathlib import Path
 
 from .agent import run
-from .browser import DEFAULT_PROFILE, Session
+from .browser import DEFAULT_PROFILE, IsolatedWorld, Session
+from .read import as_json, read_values
 from .skills import run_with_skill
 
 
@@ -40,6 +42,53 @@ async def serve_browser(args):
         await asyncio.Event().wait()
     finally:
         await session.close()
+
+
+async def read_page(args):
+    """`read`: attach (or launch), find the page, and answer with the selectors and what they read.
+
+    In connect mode the tab that is already open is the one read — the point is to read the page a
+    check has ALREADY loaded, not to fetch it a second time.
+    """
+    try:
+        want = json.loads(args.want)
+    except ValueError as e:
+        raise SystemExit(f"--want is not JSON: {e}")
+    if not isinstance(want, dict) or not isinstance(want.get("fields"), list):
+        raise SystemExit('--want needs {"fields": [...]}')
+    if args.row:
+        want["row"] = args.row
+
+    session = await (Session.connect(args.cdp, humanize=False) if args.cdp
+                     else Session.launch(profile=args.profile, headless=args.headless, humanize=False))
+    try:
+        page = await open_or_reuse(session, args.url or want.get("url"))
+        print(as_json(await read_values(session, page, want)))
+    finally:
+        await session.close()
+
+
+async def open_or_reuse(session, url):
+    """The tab already showing that page, or a new one. A check has loaded it; loading it again
+    would cost its megabytes twice and could read a different page than the one being watched."""
+    pages = [p for p in session.context.pages if p.url and p.url != "about:blank"]
+    if url:
+        for p in pages:
+            if p.url.split("#")[0] == url.split("#")[0]:
+                return prepare(p)
+    if pages and not url:
+        return prepare(pages[0])
+    return await session.new_tab(url)
+
+
+def prepare(page):
+    """A tab this process did not open still needs the isolated world and the frame caches that
+    new_tab() installs, or nothing can be evaluated in it."""
+    if not hasattr(page, "_ca_world"):
+        page.on("crash", lambda *_: setattr(page, "_ca_crashed", True))
+        page._ca_world = IsolatedWorld(page)
+        page._ca_main, page._ca_frames, page._ca_oopif = None, {}, {}
+    return page
 
 
 async def run_goal(args):
@@ -83,13 +132,22 @@ def main():
                    help="stop before a click that can't be taken back (send, buy, book, delete...)")
     r.add_argument("--no-skill", action="store_true",
                    help="work it out step by step even if this task was learned before, and save nothing")
-    for p in (b, r):
+    d = sub.add_parser("read", help="work out a selector for values described in words, and read them")
+    d.add_argument("--want", required=True,
+                   help='JSON: {"fields":[{"name":"price","type":"money","ask":"the monthly price"}],'
+                        '"container":false,"note":""}')
+    d.add_argument("--cdp", help="attach to a running browser instead of launching one")
+    d.add_argument("--url", help="open this first; without it the tab already open is read")
+    d.add_argument("--row", help="read inside this repeating row, and give selectors relative to it")
+    for p in (b, r, d):
         p.add_argument("--profile", default=str(DEFAULT_PROFILE))
         p.add_argument("--headless", action="store_true")
     args = parser.parse_args()
     load_env_file()
     try:
-        asyncio.run(serve_browser(args) if args.command == "browser" else run_goal(args))
+        asyncio.run(serve_browser(args) if args.command == "browser"
+                    else read_page(args) if args.command == "read"
+                    else run_goal(args))
     except KeyboardInterrupt:
         pass
 

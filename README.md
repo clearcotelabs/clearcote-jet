@@ -134,6 +134,35 @@ clearcote-jet run --cdp http://127.0.0.1:9222 --url https://news.ycombinator.com
 Flags: `--show-cursor` (draw the mouse), `--keep-open`, `--headless`, `--no-humanize`, `--profile DIR`,
 `--confirm` (stop before a click that can't be taken back), `--no-skill` (don't learn or replay; see below).
 
+### Reading values you can only describe
+
+Say what you want in words and get back a selector for it, so everything after the first read needs
+no model at all:
+
+```bash
+clearcote-jet read --url https://example.com/product   --want '{"fields":[{"name":"price","type":"money","ask":"the monthly price in euros"},
+                     {"name":"available","type":"boolean","ask":"whether it can be ordered now"}]}'
+```
+
+```json
+{
+  "selectors": {"price": "#buybox .a-price", "available": "#availability"},
+  "confidence": {"price": 0.96, "available": 0.91},
+  "values": {"price": "1.249,00 €", "available": "In stock"},
+  "missing": []
+}
+```
+
+The model never writes a selector. The page offers the values it can be read from, each with a
+selector already proved to find it again; the field's own type throws out the ones it rules out — a
+money field is not asking for "4 reviews" — and the model only chooses among what is left. So the
+answer is always a selector that works on the page it was found on, and `missing` names anything it
+would not guess at. A wrong selector is worse than none when it is going to be read from now on.
+
+`--cdp` reads the page a browser already has open rather than fetching it again; `--row SELECTOR`
+reads inside one repeating row and gives selectors relative to it, so they work on every row.
+One read of two fields costs about 1,900 input tokens — $0.00008 at the published rate.
+
 ### As a tool for your AI assistant (MCP)
 
 ```json
