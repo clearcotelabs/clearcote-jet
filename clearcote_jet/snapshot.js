@@ -310,39 +310,50 @@
         if (['absolute','fixed'].includes(getComputedStyle(p).position)) return p;
       return null;
     };
-    const rows=[], seen=new Set();
+    // Find the popup by hit-testing the strip at two columns; then take its rows from the popup itself, because a
+    // calendar is a grid and sampling two columns of it would offer two days out of seven.
+    const panels=new Set();
     const xs=[box.left+Math.min(24,box.width/2),box.left+box.width/2];
-    for (const dir of [1,-1]) for (let d=6; d<=420 && rows.length<12; d+=12) {
+    for (const dir of [1,-1]) for (let d=6; d<=420 && panels.size<3; d+=12) {
       const y=dir>0 ? box.bottom+d : box.top-d;
       if (y<0 || y>=innerHeight) break;
       for (const x of xs) {
         if (x<0 || x>=innerWidth) continue;
-        let row=deepPoint(x,y), hops=0;
-        while (row && hops<4 && row!==document.body && getComputedStyle(row).cursor!=='pointer') {
-          row=row.parentElement; hops++;
+        const hit=deepPoint(x,y);
+        if (!hit || hit===document.body || hit===document.documentElement || hit.contains(field)) continue;
+        const p=popup(hit);
+        if (p && !p.contains(field) && visible(p)) panels.add(p);
+      }
+    }
+    const rows=[], seen=new Set();
+    const clickable=e=>{
+      if (taken.has(e) || seen.has(e) || !visible(e) || e.contains(field)) return null;
+      if (getComputedStyle(e).cursor!=='pointer') return null;
+      const r=e.getBoundingClientRect();
+      if (r.height>120 || r.width<20 || !r.height) return null;
+      // On screen, and the thing a click would actually land on at its middle (not covered, not clipped away).
+      const cx=r.x+r.width/2, cy=r.y+r.height/2;
+      if (cx<0 || cy<0 || cx>=innerWidth || cy>=innerHeight) return null;
+      if (!e.contains(deepPoint(cx,cy))) return null;
+      const text=(e.innerText||'').replace(/\s+/g,' ').trim();
+      if (!text || text.length>80) return null;
+      // Something already clickable inside it is already offered: that control is the way in, not this row.
+      if ([...e.querySelectorAll(selector)].some(c=>taken.has(c))) return null;
+      return {row:e,top:r.top,left:r.x,text};
+    };
+    for (const panel of panels) {
+      for (const e of panel.querySelectorAll('*')) {
+        if (rows.length>=24) break;
+        const row=clickable(e);
+        if (!row) continue;
+        // The whole row, never both a row and the span inside it: whichever is outermost wins.
+        if ([...seen].some(s=>s.contains(e))) continue;
+        for (const had of [...seen]) if (e.contains(had)) {
+          seen.delete(had);
+          rows.splice(rows.findIndex(r=>r.row===had),1);
         }
-        if (!row || row===document.body || row===document.documentElement) continue;
-        // The whole row, not the span inside it that the pointer happened to land on: climb while the parent is still
-        // one clickable row (pointer cursor, a row's size) holding no more text than this one.
-        for (let p=row.parentElement, up=0; p && up<3 && p!==document.body; p=p.parentElement, up++) {
-          const r=p.getBoundingClientRect(), t=(p.innerText||'').replace(/\s+/g,' ').trim();
-          if (getComputedStyle(p).cursor!=='pointer' || r.height>120 || t.length>80) break;
-          if (t.length>(row.innerText||'').replace(/\s+/g,' ').trim().length*1.5+10) break;  // it holds other rows too
-          row=p;
-        }
-        if (!row || row===document.body || row===document.documentElement) continue;
-        if (seen.has(row) || taken.has(row) || row.contains(field) || !visible(row)) continue;
-        // One row per element, and never a row inside a row already offered.
-        if ([...seen].some(s=>s.contains(row) || row.contains(s))) continue;
-        if (getComputedStyle(row).cursor!=='pointer' || !popup(row)) continue;
-        // Something already clickable inside it is already offered: that control is the way in, not this row.
-        if ([...row.querySelectorAll(selector)].some(c=>taken.has(c))) continue;
-        const r=row.getBoundingClientRect();
-        if (r.height>120 || r.width<20) continue;
-        const text=(row.innerText||'').replace(/\s+/g,' ').trim();
-        if (!text || text.length>80) continue;
-        seen.add(row);
-        rows.push({row,top:r.top,text});
+        seen.add(e);
+        rows.push(row);
       }
     }
     const its=picked.find(c=>c.e===field);
@@ -352,7 +363,7 @@
       const id=identity(field);
       for (const a of actions) if (a.node===id) a.suggestions=String(rows.length);
     }
-    return rows.sort((a,b)=>a.top-b.top).map(({row,text})=>({node:identity(row),role:'option',kind:'click',value:'',
+    return rows.sort((a,b)=>a.top-b.top || a.left-b.left).map(({row,text})=>({node:identity(row),role:'option',kind:'click',value:'',
       label:(of+' › '+text).slice(0,200),guard:JSON.stringify(cache.guard(row))}));
   };
   actions.push(...suggested());
