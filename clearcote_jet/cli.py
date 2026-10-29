@@ -8,6 +8,7 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 from pathlib import Path
 
 from .agent import run
@@ -29,6 +30,14 @@ def load_env_file(path=".env"):
             value = value.strip().strip('"').strip("'")
             if value:
                 os.environ.setdefault(key.strip(), value)
+
+
+def utf8_output(*streams):
+    """Write UTF-8 when output goes to a pipe or file. On Windows that is the ANSI code page otherwise, which has no
+    arrow for print_step and no characters for most page text, so the first step crashed the run."""
+    for stream in streams or (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure") and not stream.isatty():
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def print_step(step):
@@ -171,6 +180,7 @@ def main():
         from .worker import main as worker_main
         worker_main()
         return
+    utf8_output()
     try:
         asyncio.run(serve_browser(args) if args.command == "browser"
                     else read_page(args) if args.command == "read"

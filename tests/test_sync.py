@@ -11,7 +11,7 @@ import threading
 
 import pytest
 
-from clearcote_jet import agent, model, worker
+from clearcote_jet import __version__, agent, model, worker
 from clearcote_jet.model import NeedsInput, goal_spans
 from clearcote_jet.skills import SkillStore, replay, run_with_skill, skill_key
 from clearcote_jet.slots import Values, canonical, redact, slots
@@ -472,7 +472,7 @@ def test_worker_frames_ready_steps_and_result(monkeypatch, tmp_path):
     stub_model(monkeypatch)
     code, events, site = drive(monkeypatch, request(confirm=False, skills_dir=str(tmp_path)))
     assert code == 0 and [e["type"] for e in events] == ["ready", "step", "step", "step", "result"]
-    assert events[0] == {"type": "ready", "version": "0.3.0"}
+    assert events[0] == {"type": "ready", "version": __version__}
     assert [e["text"] for e in events[1:4]] == ["anna@one.example", "{{password}}", None]
     result = events[-1]
     assert result["status"] == "done" and result["skill"]["used"] == "learned" and result["items_count"] == 0
