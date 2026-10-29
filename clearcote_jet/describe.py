@@ -64,6 +64,14 @@ def irreversible(action):
     return action.get("kind") == "click" and bool(IRREVERSIBLE.search(action.get("label") or ""))
 
 
+def same_control(pending, actions):
+    """The control `pending` ({kind, label, role}, and `nth` among those alike) names, on a page looked at again
+    (after a person confirmed it); None when it is gone."""
+    hits = [a for a in actions if a.get("kind") == pending.get("kind") and a.get("role") == pending.get("role")
+            and norm(a.get("label")) == norm(pending.get("label"))]
+    return hits[min(pending.get("nth", 0), len(hits) - 1)] if hits else None
+
+
 def target_info(action, actions):
     """How to find this control again later: its place among controls with the same label (and with the same shape
     of label, for labels with numbers that change), plus what a replay needs to repeat it."""

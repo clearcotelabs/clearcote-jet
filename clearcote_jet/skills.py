@@ -9,6 +9,11 @@ written again from the new run.
 
 When the results came from a JSON request, the skill keeps that request too: a replay first reads the rows with it,
 from inside the page, and only clicks through the steps if that fails.
+
+A goal with {{slots}} and values for them (slots.py) is learned as a template: the skill is keyed on the template and
+the start page, not on the values, and a value typed (or seen in a label, or in a line the run ended on) is kept as
+its slot's token. A replay fills the tokens from its own values, so one skill serves every set of values; a skill
+whose slot has no value this time ends with status needs_input before anything is done.
 """
 
 import asyncio
@@ -21,13 +26,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .agent import run
+from .agent import ask, needs_values, run
 from .browser import StalePage
 from .describe import CONSENT, Quote, Said, irreversible, named, norm, plain, shape, target_info
 from .model import screen_anchor, split_chunks
 from .shortcut import rows_from_json
+from .slots import SLOT, MissingValue, Values, canonical, each_string, slots
 
 VERSION = 1
+TEMPLATE_VERSION = 2  # a skill with {{slots}}: an older Jet, which would type the tokens as they are, skips it
 DEFAULT_DIR = Path.home() / ".clearcote-jet" / "skills"
 
 
@@ -52,7 +59,7 @@ class SkillStore:
             skill = json.loads(self.path(goal, start_url).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
-        return skill if isinstance(skill, dict) and skill.get("version") == VERSION else None
+        return skill if isinstance(skill, dict) and skill.get("version") in (VERSION, TEMPLATE_VERSION) else None
 
     def put(self, skill):
         self.folder.mkdir(parents=True, exist_ok=True)
@@ -79,8 +86,11 @@ class SkillStore:
         return out
 
 
-def skill_from_run(goal, start_url, result):
-    """The skill a finished, learning run leaves; None for any other run."""
+def skill_from_run(goal, start_url, result, values=None):
+    """The skill a finished, learning run leaves; None for any other run.
+
+    values (slots.Values): `goal` is a template; what the run typed or saw of a value is kept as its slot's token.
+    """
     if result.get("status") != "done" or not result.get("learned"):
         return None
     steps = []
@@ -100,10 +110,20 @@ def skill_from_run(goal, start_url, result):
             step["optional"] = True  # a cookie banner shows once, not on every visit
         steps.append(step)
     usage = result.get("usage") or {}
-    return {"version": VERSION, "goal": goal, "start_url": start_url,
-            "learned_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    learned = dict(result["learned"])
+    head = {"version": VERSION, "goal": goal, "start_url": start_url}
+    if values is not None:
+        names = slots(goal)
+
+        def keep(text):  # a value as its token; a secret is never written down, wherever it showed
+            return values.mask(values.templatize(text, names))
+        steps, learned = each_string(steps, keep), each_string(learned, keep)
+        used = slots(json.dumps([steps, learned], ensure_ascii=False))
+        head = {"version": TEMPLATE_VERSION, "goal": canonical(goal), "start_url": start_url, "slots": used,
+                "secret": sorted(n for n in used if n in values.secret)}
+    return {**head, "learned_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "learned_with": {"input_tokens": usage.get("input_tokens", 0), "requests": usage.get("requests", 0)},
-            "steps": steps, **result["learned"]}
+            "steps": steps, **learned}
 
 
 def locate(step, actions):
@@ -156,12 +176,33 @@ def _row_line(row):
     return "- " + " · ".join(str(row[k]) for k in ("title", "price", "link") if row.get(k))
 
 
-async def replay(session, skill, page, on_step=None, confirm=False, said=False):
+async def replay(session, skill, page, on_step=None, confirm=False, said=False, values=None, approve=None):
     """Do a skill again with no model. -> a result like run()'s, with status:
     done: it read the results through the shortcut, or found every step and ended where the skill ended;
     needs_confirmation: `confirm` is on and the next step can't be taken back (it is not clicked);
+    cancelled: `confirm` is on, `approve` was asked (as in run()) and said no;
+    needs_input: the skill has a {{slot}} that `values` (slots.Values) has no value for; nothing is done;
     diverged: the page no longer matches (`detail` says where); `trace` holds the steps done, for the loop.
     """
+    fill = values or Values()
+    recorded = skill
+    if skill.get("slots") is not None:  # learned from a template: its tokens are this replay's values
+        if missing := fill.missing(skill["slots"]):
+            return needs_values(page, missing)
+        try:
+            skill = {**skill, **each_string({k: skill[k] for k in ("steps", "end", "list", "shortcut") if k in skill},
+                                            fill.fill)}
+        except MissingValue as e:
+            return needs_values(page, [str(e)])
+    else:
+        fill = Values()  # a plain skill is replayed as it was written, braces and all
+    result = await _replay(session, skill, recorded["steps"], page, on_step, confirm, approve, fill)
+    if fill.secret:
+        result = each_string(result, fill.mask)
+    return result if said else plain(result)  # said: the messages as describe.Said, for the MCP server
+
+
+async def _replay(session, skill, recorded, page, on_step, confirm, approve, fill):
     started = time.perf_counter()
     ms = lambda: round((time.perf_counter() - started) * 1000)  # noqa: E731
     trace, rows, status, detail, pending, via, state = [], [], "done", None, None, "steps", None
@@ -196,11 +237,21 @@ async def replay(session, skill, page, on_step=None, confirm=False, said=False):
                                                   ") is not on the page")
                 break
             if confirm and irreversible(action):
-                status, pending = "needs_confirmation", {"kind": action["kind"], "label": action["label"],
-                                                         "role": action.get("role")}
-                detail = Said("stopped before ", Quote(action["label"][:80]),
-                              ", which can't be taken back: confirm to go ahead")
-                break
+                asked = {"kind": action["kind"], "label": action["label"], "role": action.get("role")}
+                why = Said("stopped before ", Quote(action["label"][:80]),
+                           ", which can't be taken back: confirm to go ahead")
+                if approve is None:
+                    status, pending, detail = "needs_confirmation", asked, why
+                    break
+                if not await ask(approve, asked, why):
+                    status, detail = "cancelled", Said("not confirmed: ", Quote(action["label"][:80]))
+                    break
+                state = await look(step)  # the page may have moved on while the person decided
+                action = _control(step, state)
+                if action is None:
+                    status, detail = "diverged", Said(f"step {i + 1} (", Quote(step["label"][:60]),
+                                                      ") was gone once it was confirmed")
+                    break
             try:
                 await session.act(page, state, action, step.get("text"))
             except StalePage:  # the page moved under the step: look again, once
@@ -216,7 +267,8 @@ async def replay(session, skill, page, on_step=None, confirm=False, said=False):
                     break
             new_state = await session.observe(page, after=action)
             trace.append({"step": len(trace) + 1, "action": action["label"], "kind": action["kind"],
-                          "role": action.get("role"), "text": step.get("text"), "text_source": None,
+                          "role": action.get("role"), "text": fill.show(recorded[i].get("text")),
+                          "text_source": None,
                           "probability": None, "alternatives": [], "confidence": None, "decide_ms": 0, "at_ms": ms(),
                           "url": state["url"], "target": target_info(action, state["actions"]),
                           "page_changed": new_state["marker"] != state["marker"], "led_to": new_state["url"],
@@ -239,7 +291,7 @@ async def replay(session, skill, page, on_step=None, confirm=False, said=False):
         markdown = "\n\n".join(chunks[start:start + 3])
         rows = rows if status == "done" else []
     elapsed = ms()
-    result = {
+    return {
         "status": status, "detail": detail, "url": page.url, "title": await page.title(), "elapsed_ms": elapsed,
         "actions": len(trace), "decisions": 0, "text_calls": 0,
         "timing": {"decide_ms": 0, "value_ms": 0, "browser_ms": elapsed},
@@ -250,31 +302,47 @@ async def replay(session, skill, page, on_step=None, confirm=False, said=False):
                   "learned_at": skill.get("learned_at"), "learned_with": skill.get("learned_with")},
         **({"pending": pending} if pending else {}),
     }
-    return result if said else plain(result)  # said: the messages as describe.Said, for the MCP server
 
 
-async def run_with_skill(session, goal, url=None, page=None, store=None, on_step=None, confirm=False, said=False):
+async def run_with_skill(session, goal, url=None, page=None, store=None, on_step=None, confirm=False, said=False,
+                         values=None, secret=(), approve=None, max_steps=None):
     """run(), learned once: the first time a goal is run from a start page it is learned and saved as a skill; later
     times the skill is replayed with no model, and where the page changed the loop takes over and the skill is
     written again. result["skill"]["used"]: learned, replayed, shortcut or repaired.
+
+    values, secret: `goal` is a template with {{slots}} (see run() and slots.py); the skill is keyed on the template,
+    so the same skill replays with other values. approve, max_steps: as in run().
     """
     page = page or await session.new_tab(url)
     start_url = url or page.url
     store = store or SkillStore()
-    skill = store.get(goal, start_url)
+    templated = values is not None and bool(SLOT.search(goal or ""))
+    fill = Values(values, secret)
+    key = canonical(goal) if templated else goal
+    skill = store.get(key, start_url)
+    if skill and templated and skill.get("slots") is None:
+        skill = None  # learned from these words with no values: its braces were typed as they are; learn it again
+    # what this run needs values for: the skill's slots, or before it is learned the template's
+    need = (skill.get("slots") or []) if skill else (slots(goal) if templated else [])
+    if missing := fill.missing(need):
+        result = needs_values(page, missing)
+        result["skill"] = {"used": "replayed" if skill else None}
+        return result if said else plain(result)
+    loop = dict(on_step=on_step, confirm=confirm, learn=True, said=said, approve=approve, max_steps=max_steps,
+                values=values if templated else None, secret=secret)
     if skill:
-        result = await replay(session, skill, page, on_step=on_step, confirm=confirm, said=said)
+        result = await replay(session, skill, page, on_step=on_step, confirm=confirm, said=said, values=fill,
+                              approve=approve)
         if result["status"] != "diverged":
             return result
         why = result["detail"]
         # the page changed since the skill was learned: the loop carries on from here, and the skill is written again
-        result = await run(session, goal, page=page, on_step=on_step, history=result["trace"], confirm=confirm,
-                           learn=True, said=said)
+        result = await run(session, goal, page=page, history=result["trace"], **loop)
         result["skill"] = {"used": "repaired", "because": why}
     else:
-        result = await run(session, goal, page=page, on_step=on_step, confirm=confirm, learn=True, said=said)
+        result = await run(session, goal, page=page, **loop)
         result["skill"] = {"used": "learned"}
-    new = skill_from_run(goal, start_url, result)
+    new = skill_from_run(goal, start_url, result, fill if templated else None)
     if new:
         result["skill"]["saved"] = str(store.put(new))
     return result

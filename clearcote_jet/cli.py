@@ -1,6 +1,8 @@
 """clearcote-jet browser  → start a headed Clearcote browser with a CDP port and keep it running.
 clearcote-jet run      → run one goal (connects with --cdp, otherwise launches its own browser).
-clearcote-jet read     → work out a selector for values described in words, and read them."""
+clearcote-jet read     → work out a selector for values described in words, and read them.
+clearcote-jet worker   → run one task for another program: a JSON request on stdin, JSON events on stdout
+                         (see worker.py)."""
 
 import argparse
 import asyncio
@@ -91,8 +93,24 @@ def prepare(page):
     return page
 
 
+def task_values(args):
+    """--values / --secret: the goal is a template with {{slots}} (see slots.py). -> (values or None, secret names)"""
+    if args.values is None:
+        if args.secret:
+            raise SystemExit("--secret names a slot of --values: give --values as well")
+        return None, []
+    try:
+        values = json.loads(args.values)
+    except ValueError as e:
+        raise SystemExit(f"--values is not JSON: {e}")
+    if not isinstance(values, dict):
+        raise SystemExit('--values needs a JSON object, e.g. {"email": "a@b.example"}')
+    return {k: str(v) for k, v in values.items()}, list(args.secret or [])
+
+
 async def run_goal(args):
     humanize = not args.no_humanize
+    values, secret = task_values(args)
     if args.cdp:
         session = await Session.connect(args.cdp, humanize=humanize)
     else:
@@ -104,9 +122,10 @@ async def run_goal(args):
         page = await session.new_tab(args.url)
         if args.url and not args.no_skill:  # learned once, then replayed with no model (see skills.py)
             result = await run_with_skill(session, args.goal, url=args.url, page=page, on_step=print_step,
-                                          confirm=args.confirm)
+                                          confirm=args.confirm, values=values, secret=secret)
         else:
-            result = await run(session, args.goal, page=page, on_step=print_step, confirm=args.confirm)
+            result = await run(session, args.goal, page=page, on_step=print_step, confirm=args.confirm,
+                               values=values, secret=secret)
         print(json.dumps({k: v for k, v in result.items() if k != "trace"}, indent=2, ensure_ascii=False))
         if args.keep_open and not args.cdp:
             print("Browser kept open (Ctrl-C to close).", flush=True)
@@ -132,6 +151,9 @@ def main():
                    help="stop before a click that can't be taken back (send, buy, book, delete...)")
     r.add_argument("--no-skill", action="store_true",
                    help="work it out step by step even if this task was learned before, and save nothing")
+    r.add_argument("--values", help='JSON values for the {{slots}} in --goal, e.g. {"email": "a@b.example"}')
+    r.add_argument("--secret", action="append", metavar="SLOT",
+                   help="a slot whose value the model never sees and nothing writes down (repeat for more)")
     d = sub.add_parser("read", help="work out a selector for values described in words, and read them")
     d.add_argument("--want", required=True,
                    help='JSON: {"fields":[{"name":"price","type":"money","ask":"the monthly price"}],'
@@ -139,11 +161,16 @@ def main():
     d.add_argument("--cdp", help="attach to a running browser instead of launching one")
     d.add_argument("--url", help="open this first; without it the tab already open is read")
     d.add_argument("--row", help="read inside this repeating row, and give selectors relative to it")
+    sub.add_parser("worker", help="run one task for another program: JSON lines on stdin and stdout")
     for p in (b, r, d):
         p.add_argument("--profile", default=str(DEFAULT_PROFILE))
         p.add_argument("--headless", action="store_true")
     args = parser.parse_args()
     load_env_file()
+    if args.command == "worker":
+        from .worker import main as worker_main
+        worker_main()
+        return
     try:
         asyncio.run(serve_browser(args) if args.command == "browser"
                     else read_page(args) if args.command == "read"

@@ -202,16 +202,22 @@ class Session:
     @classmethod
     async def connect(cls, cdp_url, humanize=True):
         pw = await async_playwright().start()
-        browser = await pw.chromium.connect_over_cdp(cdp_url)
-        context = browser.contexts[0] if browser.contexts else await browser.new_context()
-        if humanize:
-            from clearcote.async_api import install_humanize_on_context  # the SDK's own launch path uses it
-            await install_humanize_on_context(context, True, browser=browser)
+        try:
+            browser = await pw.chromium.connect_over_cdp(cdp_url)
+            context = browser.contexts[0] if browser.contexts else await browser.new_context()
+            if humanize:
+                from clearcote.async_api import install_humanize_on_context  # the SDK's own launch path uses it
+                await install_humanize_on_context(context, True, browser=browser)
+        except BaseException:
+            await pw.stop()  # no browser there: the driver it started does not outlive the attempt
+            raise
         return cls(context, owner=(pw, browser), humanize=humanize)
 
-    async def new_tab(self, url=None):
+    async def new_tab(self, url=None, reuse_blank=True):
         # A fresh persistent context opens with one blank tab: use it instead of leaving it empty beside ours.
-        blank = [p for p in self.context.pages if p.url == "about:blank" and not hasattr(p, "_ca_world")]
+        # reuse_blank=False: a tab of its own even so (a browser someone else is using: its tabs stay as they are).
+        blank = [p for p in self.context.pages if p.url == "about:blank" and not hasattr(p, "_ca_world")
+                 and reuse_blank]
         page = blank[0] if blank else await self.context.new_page()
         page.on("crash", lambda *_: setattr(page, "_ca_crashed", True))
         page._ca_world = IsolatedWorld(page)

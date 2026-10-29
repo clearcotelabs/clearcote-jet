@@ -52,6 +52,10 @@ GOAL_FIND = """Choose the exact words from the goal to look for on this long pag
 item the goal wants to reach ("404 Not Found", not "the section that defines 404 Not Found"). Choose NONE if the goal
 names no such place."""
 
+# Given with a field's value question when the goal has {{slots}} in it (slots.py).
+PLACEHOLDERS = ("A word in double braces in the goal, such as {{password}}, stands for a value kept from you. "
+                "To enter that value, give the placeholder exactly as written, braces included.")
+
 MAX_STEPS = 60
 # Scrolling this many times in a row ends the run as blocked: a goal reached by scrolling is reached long before, and
 # without a stop a long document can use every remaining step (each one a full decision request).

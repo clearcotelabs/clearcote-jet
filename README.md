@@ -92,7 +92,18 @@ Replays are not much faster: most of a run is the browser and its human-paced in
 
 Skills are JSON files in `~/.clearcote-jet/skills` (`CLEARCOTE_JET_SKILLS`). On the command line, `--no-skill` works a
 task out step by step and saves nothing; over MCP, `browse(..., reuse=False)` does the same, and `list_skills` /
-`forget_skill` manage them. A skill is for one goal from one page: another search term is another skill.
+`forget_skill` manage them. A skill is for one goal from one page: another search term is another skill, unless the
+goal is a template (below).
+
+A goal with `{{slots}}` in it, run with values for them, is learned as a **template**: "Log in as {{email}} with
+password {{password}}" is one skill whatever the email and password, so it is learned once and replayed for every
+account. The skill keeps a typed value as its slot (`{{email}}`), and a replay types its own values. A replay whose
+skill has a slot you gave no value for stops at once with `needs_input`, naming the slot. A goal without `{{...}}` is
+keyed exactly as before.
+
+A slot can be **secret**: the model is shown the goal with that slot left as `{{password}}`, chooses to type the
+token like any other word of the goal, and the keys pressed are the value's. The trace, the result, the saved skill
+and every request to the model hold the token, never the value, even where the page shows it back.
 
 ## Results without a model
 
@@ -132,7 +143,55 @@ clearcote-jet run --cdp http://127.0.0.1:9222 --url https://news.ycombinator.com
 ```
 
 Flags: `--show-cursor` (draw the mouse), `--keep-open`, `--headless`, `--no-humanize`, `--profile DIR`,
-`--confirm` (stop before a click that can't be taken back), `--no-skill` (don't learn or replay; see below).
+`--confirm` (stop before a click that can't be taken back), `--no-skill` (don't learn or replay; see below),
+`--values JSON` and `--secret SLOT` (a template goal and its values; see above):
+
+```bash
+clearcote-jet run --cdp http://127.0.0.1:9222 --url https://shop.example/login \
+  --goal "Log in as {{email}} with password {{password}}" \
+  --values '{"email": "anna@one.example", "password": "..."}' --secret password
+```
+
+### Running a task across many profiles (worker)
+
+`clearcote-jet worker` (or `python -m clearcote_jet.worker`) runs one task for another program, such as the Profile
+Manager running the same task in many browser profiles: one worker process per profile and task. The program starts
+it, writes one request line to its stdin, and reads events from its stdout, one JSON object per line. Stdout carries
+nothing else (logs go to stderr), and it is plain ASCII.
+
+```json
+{"cmd": "run", "cdp": "http://127.0.0.1:9222", "url": "https://shop.example/login",
+ "goal": "Log in as {{email}} with password {{password}}, then place the order",
+ "values": {"email": "anna@one.example", "password": "..."}, "secret": ["password"],
+ "confirm": true, "humanize": true, "reuse": true, "skills_dir": null, "max_steps": null}
+```
+
+| Field | Meaning |
+|---|---|
+| `cdp` | required: the running browser to attach to |
+| `goal` | required: the task, a template when `values` is given |
+| `url` | the start page, opened in a new tab of the worker's own (the tabs already open stay as they are); without it the first open tab is used, and nothing is learned |
+| `values`, `secret` | the slots' values, and which of them are secret |
+| `confirm` | ask before a click that can't be taken back (default off) |
+| `humanize` | human-paced mouse and keys (default on) |
+| `reuse` | learn the task once and replay it with no model after (default on) |
+| `skills_dir` | where skills are kept (default `CLEARCOTE_JET_SKILLS`, then `~/.clearcote-jet/skills`) |
+| `max_steps` | at most this many actions (default 60) |
+
+Events, by `type`:
+
+| `type` | When |
+|---|---|
+| `ready` | at once, with `version` |
+| `step` | after each action: the step as `trace` has it (`step`, `kind`, `action`, `text`, `probability`, `url`, `replayed`...) |
+| `needs_confirmation` | with `confirm`, before a click that can't be taken back: `pending` (`kind`, `label`, `role`) and `detail`. Nothing is clicked until the program writes `{"cmd": "approve"}`; `{"cmd": "cancel"}`, or closing stdin, cancels. After an approval the task goes on from there (a replay from its next step), and the next such click is asked about again |
+| `result` | the end: `status`, `detail`, `url`, `title`, `elapsed_ms`, `actions`, `decisions`, `usage`, `skill`, `pending`, `markdown` (at most 4,000 characters, `markdown_truncated`), `items` (at most 200 rows) and `items_count`. Exit code 0 |
+| `error` | the request was wrong, the browser could not be reached, or the task failed: `message`. Exit code 1 |
+
+`status` in the result is one of those under [Reading a result](#reading-a-result), plus `cancelled` (a click was
+not approved) and `stopped` (the program wrote `{"cmd": "stop"}`, which ends the task as soon as it can, at any time).
+A secret value never appears in an event: it is written as its `{{slot}}`. The worker only disconnects at the end:
+the browser and its other tabs keep running, and its own tab stays open for a look.
 
 ### Reading values you can only describe
 
@@ -237,7 +296,7 @@ Put them in `.env` (see `.env.example`) or the environment:
 
 | Field | Meaning |
 |---|---|
-| `status` | `done`, `blocked` (nothing on the page, its closed menus and scroll boxes included, can move it forward, or it scrolled 12 times in a row), `needs_input` (the goal lacks a value a field needs), `needs_confirmation` (with `confirm`: the next click can't be taken back), `budget` (hit the step cap) or `error` |
+| `status` | `done`, `blocked` (nothing on the page, its closed menus and scroll boxes included, can move it forward, or it scrolled 12 times in a row), `needs_input` (the goal lacks a value a field needs, or a template slot has no value), `needs_confirmation` (with `confirm`: the next click can't be taken back), `cancelled` (with `confirm` and an `approve` callback: the click was not approved), `budget` (hit the step cap) or `error` |
 | `trace` | every step: what was done, the text typed, its probability, the runner-up options and how long the decision took (replayed steps are marked `replayed`) |
 | `stale` | steps that were decided again because the page changed before Jet could act |
 | `usage` | decision-model tokens and requests, `estimated_usd`, and any text-model tokens |
@@ -306,6 +365,7 @@ python tests/e2e/check_mcp_tools.py        # snapshot and act on a local form (o
 python tests/e2e/check_mcp_stdio.py        # the MCP server over stdio, as an assistant runs it
 python tests/e2e/check_mcp_hardening.py    # annotations, refused local urls, time limits, big screenshots to a file
 python tests/e2e/check_skills.py           # learn, replay, repair, lists, the request shortcut, confirm and find
+python tests/e2e/check_worker.py           # the worker as a process: a template learned, replayed with other values, approve and cancel
 ```
 
 ## License

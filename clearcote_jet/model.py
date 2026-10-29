@@ -11,7 +11,8 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
-from .questions import ELEMENT_FORMAT, GOAL_FIND, GOAL_VALUE, NEXT_ACTION, TARGET, TEXT_VALUE
+from .questions import ELEMENT_FORMAT, GOAL_FIND, GOAL_VALUE, NEXT_ACTION, PLACEHOLDERS, TARGET, TEXT_VALUE
+from .slots import SLOT, redact
 
 CLIENT = httpx.AsyncClient(timeout=60)
 DECIDE_URL = "https://api.typesafe.ai/v1/systemone"
@@ -28,6 +29,7 @@ class NeedsInput(Exception):
 
 
 async def post_json(url, key, body, headers=None):
+    body = redact(body)  # a secret of the run in progress never leaves in a request, wherever the page put it
     for attempt in range(3):
         try:
             response = await CLIENT.post(url, json=body, headers={"Authorization": f"Bearer {key}", **(headers or {})})
@@ -221,12 +223,15 @@ def field_context(goal, action, page, history):
     field = {k: action.get(k) for k in ("label", "role", "value")}
     if action.get("kind") == "find":
         field["purpose"] = "words to look for on this page, not text to type"
-    return {
+    context = {
         "goal": goal,
         "field": field,
         "page": {"title": page["title"], "text": page["text"][:6000]},
         "recent_actions": [{k: h.get(k) for k in ("action", "text")} for h in history[-6:]],
     }
+    if SLOT.search(goal or ""):  # a goal with {{slots}} kept from the model (see slots.py)
+        context["placeholders"] = PLACEHOLDERS
+    return context
 
 
 GOAL_SPAN_WORDS = 5
@@ -235,10 +240,13 @@ MAX_GOAL_SPANS = 200
 
 def goal_spans(goal):
     """Every run of 1-5 consecutive words of the goal, edge punctuation trimmed: the values a field may get."""
-    words, spans = goal.split(), []
+    # A {{slot}} is one word whose braces are not edge punctuation: it is typed as written (see slots.py).
+    words = SLOT.sub(lambda m: "\ue000" + m.group(1) + "\ue001", goal).split()
+    spans = []
     for n in range(1, GOAL_SPAN_WORDS + 1):
         for i in range(len(words) - n + 1):
             span = " ".join(words[i:i + n]).strip(".,;:!?()[]{}\"'“”‘’")
+            span = span.replace("\ue000", "{{").replace("\ue001", "}}")
             if span and span not in spans:
                 spans.append(span)
     return spans[:MAX_GOAL_SPANS]

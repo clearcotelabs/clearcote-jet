@@ -187,7 +187,7 @@ async def read_values(session, page, want):
         "confidence": {name: got["probability"] for name, got in selectors.items()},
         "values": values,
         "missing": [f["name"] for f in fields if f["name"] not in selectors],
-        "lists": [{"item": l["item"], "count": l.get("count")} for l in lists[:3]],
+        "lists": [{"item": lst["item"], "count": lst.get("count")} for lst in lists[:3]],
         "model": meta,
     }
 

@@ -6,11 +6,12 @@ import time
 from playwright.async_api import Error as PlaywrightError
 
 from .browser import BrowserClosed, StalePage
-from .describe import Quote, Said, best_list, end_lines, irreversible, plain, target_info
+from .describe import Quote, Said, best_list, end_lines, irreversible, plain, same_control, target_info
 from .model import (MAX_RANKED_BLOCKS, NeedsInput, add_usage, choose, estimate_usd, field_context, field_text,
                     page_view, rank_blocks, resolve, resolve_redirects, screen_anchor, split_chunks)
 from .questions import MAX_SCROLL_STREAK, MAX_STEPS, MENU_SCROLL_STREAK
 from .shortcut import find_shortcut
+from .slots import SECRETS, MissingValue, Values, each_string, slots, token
 
 TOP_BLOCKS = 8
 
@@ -25,18 +26,65 @@ def _page_of(url):
     return (url or "").split("#", 1)[0]
 
 
+def stopped(page, status, detail, title="", trace=None, elapsed=0):
+    """The result of a task that ended before it began (or was stopped from outside): no answer read."""
+    return {"status": status, "detail": detail, "url": page.url, "title": title, "elapsed_ms": elapsed,
+            "actions": len(trace or []), "decisions": 0, "text_calls": 0,
+            "timing": {"decide_ms": 0, "value_ms": 0, "browser_ms": elapsed},
+            "usage": {"input_tokens": 0, "output_tokens": 0, "requests": 0, "estimated_usd": 0.0,
+                      "text_model": {"input_tokens": 0, "output_tokens": 0, "requests": 0}},
+            "stale": [], "trace": list(trace or []), "markdown": "", "block_scores": [], "items": []}
+
+
+def needs_values(page, names):
+    """A template run missing values for `names`: nothing is done."""
+    return stopped(page, "needs_input", "No value given for " + ", ".join(token(n) for n in names))
+
+
+async def ask(approve, pending, detail):
+    """The caller's answer about a click that can't be taken back: True goes ahead."""
+    answer = approve(pending, str(detail))
+    return bool(await answer if inspect.isawaitable(answer) else answer)
+
+
 async def run(session, goal, url=None, page=None, on_step=None, history=None, confirm=False, learn=False,
-              said=False):
+              said=False, values=None, secret=(), approve=None, max_steps=None):
     """Run one goal in a tab. Returns a result dict; the tab is left open for the caller to close.
 
     history: steps already done in this tab (a replayed skill that lost its way), so the loop carries on from them.
     confirm: stop before a click that can't be taken back (send, buy, book, delete...), with status
         needs_confirmation and the click in `pending`; nothing is clicked.
+    approve: with confirm, ask instead of stopping: approve(pending, detail) (it may be async) is called before such
+        a click. True clicks it and the run goes on (the next such click is asked about again); False ends the run
+        with status cancelled.
     learn: also note what a skill needs: how the run ended, how the results list is read, and the JSON request
         behind the list if there is one (result["learned"]).
+    values, secret: `goal` is a template with {{slots}} (see slots.py). The model gets it with the plain slots
+        filled in and the `secret` ones left as tokens; a token it types is typed as its value. A slot with no value
+        ends the run at once with status needs_input. values=None: the goal is taken as it is written.
+    max_steps: at most this many actions (default questions.MAX_STEPS).
     A finished run carries `items`: the rows of the page's list of results, read without a model (empty if none).
     """
     page = page or await session.new_tab(url)
+    fill = Values(values, secret)
+    templated = values is not None
+    if templated:
+        if missing := fill.missing(slots(goal)):
+            return needs_values(page, missing)
+        goal = fill.for_model(goal)
+    secrets = fill.secrets() if templated else ()
+    hidden = SECRETS.set(secrets)  # model.post_json takes these out of every request
+    try:
+        result = await _run(session, goal, page, on_step, history, confirm, learn, approve, max_steps or MAX_STEPS,
+                            fill if templated else None)
+    finally:
+        SECRETS.reset(hidden)
+    if secrets:  # whatever the page showed of a secret stays out of the result
+        result = each_string(result, fill.mask)
+    return result if said else plain(result)  # said: the messages as describe.Said, for the MCP server
+
+
+async def _run(session, goal, page, on_step, history, confirm, learn, approve, max_steps, fill):
     started = time.perf_counter()
     ms = lambda: round((time.perf_counter() - started) * 1000)  # noqa: E731
     timing = {"decide_ms": 0, "value_ms": 0}
@@ -45,7 +93,7 @@ async def run(session, goal, url=None, page=None, on_step=None, history=None, co
     text_usage = {"input_tokens": 0, "output_tokens": 0, "requests": 0}
     history, decisions, text_calls, pending_text, stale = list(history or []), 0, 0, None, []
     status, detail, verdict, window, scores = "blocked", None, None, [], []
-    items, learned, pending = [], None, None
+    items, learned, pending, approved = [], None, None, None
     capture = session.capture_json(page) if learn else None
     # Pages where the links inside closed menus (and the controls scrolled away inside a scroll box of their own) are
     # offered too, because the run got stuck there: the model chose BLOCKED, or scrolled MENU_SCROLL_STREAK times in a
@@ -61,7 +109,7 @@ async def run(session, goal, url=None, page=None, on_step=None, history=None, co
         state = await look()
         first_text = state["text"]
         while True:
-            if decisions >= MAX_STEPS * 2 or len(history) >= MAX_STEPS:
+            if decisions >= max_steps * 2 or len(history) >= max_steps:
                 status, detail = "budget", f"{len(history)} actions / {decisions} decisions"
                 break
             decision = await choose(state, goal, history)
@@ -89,12 +137,22 @@ async def run(session, goal, url=None, page=None, on_step=None, history=None, co
                 status = operation.lower()
                 break
             verdict = None
-            if confirm and irreversible(action):
-                status, pending = "needs_confirmation", {"kind": action["kind"], "label": action["label"],
-                                                         "role": action.get("role")}
-                detail = Said("stopped before ", Quote(action["label"][:80]),
-                              ", which can't be taken back: confirm to go ahead")
-                break
+            if confirm and irreversible(action) and not (approved and same_control(approved, [action])):
+                asked = {"kind": action["kind"], "label": action["label"], "role": action.get("role")}
+                why = Said("stopped before ", Quote(action["label"][:80]),
+                           ", which can't be taken back: confirm to go ahead")
+                if approve is None:
+                    status, pending, detail = "needs_confirmation", asked, why
+                    break
+                if not await ask(approve, asked, why):
+                    status, detail = "cancelled", Said("not confirmed: ", Quote(action["label"][:80]))
+                    break
+                # The page may have moved on while the person decided: look again and find the same control.
+                approved = {**asked, "nth": target_info(action, state["actions"])["nth"]}
+                state = await look()
+                action = same_control(approved, state["actions"])
+                if action is None:
+                    continue  # decided again on the new page; this control is not asked about twice
             text = text_info = None
             try:
                 if action["kind"] in ("fill", "find"):
@@ -111,7 +169,11 @@ async def run(session, goal, url=None, page=None, on_step=None, history=None, co
                         add_usage(decide_usage if text_info.get("billed") else text_usage,
                                   text_info.get("usage"))
                         pending_text = (key, text, text_info)
-                await session.act(page, state, action, text)
+                # a {{slot}} the model chose is typed as its value; the trace keeps the token
+                await session.act(page, state, action, fill.fill(text) if fill else text)
+            except MissingValue as e:
+                status, detail = "needs_input", Said("No value given for ", Quote(token(str(e)), bare=True))
+                break
             except NeedsInput as e:
                 if action["kind"] == "find":  # the goal names no place to jump to: nothing happens, the loop sees that
                     pending_text, text = None, None
@@ -123,7 +185,7 @@ async def run(session, goal, url=None, page=None, on_step=None, history=None, co
                                   Quote(getattr(session, "last_diff", ""), bare=True), "]"))  # what changed
                 state = await look()
                 continue
-            pending_text = None
+            pending_text, approved = None, None
             history.append({
                 "step": len(history) + 1,
                 "action": action["label"],
@@ -212,7 +274,7 @@ async def run(session, goal, url=None, page=None, on_step=None, history=None, co
         **({"pending": pending} if pending else {}),
         **({"learned": learned} if learned else {}),
     }
-    return result if said else plain(result)  # said: the messages as describe.Said, for the MCP server
+    return result
 
 
 async def step(session, page, state=None, op=None, target=None, instruction=None, text=None):

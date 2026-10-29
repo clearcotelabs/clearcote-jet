@@ -1,6 +1,8 @@
 """Goal-driven browser agent on Clearcote."""
 
-from .agent import run
-from .browser import Session
+__version__ = "0.3.0"
 
-__all__ = ["run", "Session"]
+from .agent import run  # noqa: E402
+from .browser import Session  # noqa: E402
+
+__all__ = ["run", "Session", "__version__"]
