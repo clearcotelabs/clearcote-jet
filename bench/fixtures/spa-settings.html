@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orbit</title>
+<style>:root{--accent:#2563eb}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#1f2933;background:#f5f6f8}
+a{color:var(--accent)}
+.topbar{background:#111827;color:#d1d5db;font-size:13px;text-align:center;padding:7px 12px}
+.topbar a{color:#fff}
+header.site{background:#fff;border-bottom:1px solid #e5e7eb}
+.hwrap{max-width:1140px;margin:0 auto;display:flex;align-items:center;gap:28px;padding:14px 20px;flex-wrap:wrap}
+.logo{font-weight:800;font-size:21px;color:var(--accent);text-decoration:none;letter-spacing:-.3px}
+.logo span{color:#111827}
+nav.main{display:flex;gap:18px;flex-wrap:wrap}
+nav.main a{color:#374151;text-decoration:none;font-weight:500}
+nav.main a:hover{color:var(--accent)}
+.hright{margin-left:auto;display:flex;gap:14px;align-items:center}
+.hright a{color:#374151;text-decoration:none;font-size:14px}
+.hsearch{width:220px;padding:7px 10px;border:1px solid #d1d5db;border-radius:18px;font:inherit;font-size:14px}
+.crumbs{max-width:1140px;margin:0 auto;padding:12px 20px 0;font-size:13px;color:#6b7280}
+.crumbs a{color:#6b7280}
+main{max-width:1140px;margin:0 auto;padding:22px 20px 64px}
+h1{font-size:28px;margin:6px 0 14px;letter-spacing:-.4px}
+h2{font-size:20px;margin:22px 0 10px}
+footer.site{background:#111827;color:#9ca3af;padding:40px 20px 24px;font-size:14px}
+.fwrap{max-width:1140px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr);gap:24px}
+footer.site h4{color:#f9fafb;margin:0 0 10px;font-size:14px}
+footer.site a{color:#9ca3af;text-decoration:none;display:block;margin:5px 0}
+.legal{max-width:1140px;margin:26px auto 0;border-top:1px solid #374151;padding-top:16px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px}
+.legal a{display:inline;margin-left:14px}
+.card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:22px}
+label{display:block;font-weight:600;margin:14px 0 6px;font-size:14px}
+input[type=text],input[type=email],input[type=password],input[type=tel],input[type=search],input[type=number],input[type=url],select,textarea{width:100%;padding:10px 12px;border:1px solid #cbd5e1;border-radius:6px;font:inherit;background:#fff;color:inherit}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:0;border-color:transparent}
+.btn{display:inline-block;background:var(--accent);color:#fff;border:0;border-radius:6px;padding:10px 18px;font:inherit;font-weight:600;cursor:pointer;text-decoration:none}
+.btn.secondary{background:#fff;color:#374151;border:1px solid #cbd5e1}
+.btn.ghost{background:transparent;color:var(--accent);border:0}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.err{color:#b91c1c;font-size:13px;margin-top:4px}
+.errbox{background:#fef2f2;border:1px solid #fca5a5;color:#991b1b;padding:10px 14px;border-radius:8px;margin:12px 0;font-size:14px}
+.ok{background:#ecfdf5;border:1px solid #10b981;color:#065f46;padding:12px 16px;border-radius:8px;margin:16px 0}
+.muted{color:#6b7280;font-size:13px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.row{display:flex;gap:12px;align-items:center}
+.check{display:flex;gap:8px;align-items:center;font-weight:400;margin:8px 0}
+.badge{display:inline-block;font-size:12px;padding:2px 8px;border-radius:10px;background:#eef2ff;color:#3730a3}
+.hidden{display:none!important}
+@media (max-width:760px){.fwrap{grid-template-columns:1fr 1fr}.grid2,.grid3{grid-template-columns:1fr}.hsearch{display:none}}
+</style>
+</head>
+<body>
+<header class="site"><div class="hwrap"><a class="logo" href="#">Orbit</a><nav class="main"><a href="#">Workspace</a><a href="#">Templates</a><a href="#">Help</a></nav><div class="hright"><a href="#">Upgrade</a><a href="#">Sam P.</a></div></div></header>
+
+
+<style>.app{display:grid;grid-template-columns:220px 1fr;gap:0;min-height:520px;background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden}
+.nav{background:#f8fafc;border-right:1px solid #e5e7eb;padding:14px}.nav button{display:block;width:100%;text-align:left;border:0;background:none;padding:9px 10px;border-radius:6px;font:inherit;cursor:pointer;color:#374151}
+.nav button.on{background:#dbeafe;color:#1e40af;font-weight:600}.view{padding:24px}
+.sub button{border:0;background:none;padding:8px 14px;font:inherit;cursor:pointer;color:#6b7280;border-bottom:2px solid transparent}.sub button.on{color:#111827;border-color:var(--accent);font-weight:600}
+.sw{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid #f1f5f9}
+.switch{width:44px;height:24px;border-radius:12px;background:#cbd5e1;border:0;position:relative;cursor:pointer}.switch:after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;transition:left .15s}
+.switch[aria-checked=true]{background:var(--accent)}.switch[aria-checked=true]:after{left:23px}
+@media (max-width:760px){.app{grid-template-columns:1fr}}</style>
+<main><div class="app">
+ <div class="nav" id="nav"><button data-v="dashboard" class="on">Dashboard</button><button data-v="projects">Projects</button><button data-v="team">Team</button><button data-v="settings">Settings</button></div>
+ <div class="view" id="view"></div>
+</div></main>
+<footer class="site"><div class="fwrap"><div><h4>Company</h4><a href="#">About us</a><a href="#">Careers</a><a href="#">Press</a><a href="#">Investors</a><a href="#">Contact</a></div><div><h4>Products</h4><a href="#">Features</a><a href="#">Pricing</a><a href="#">Integrations</a><a href="#">Changelog</a><a href="#">Status</a></div><div><h4>Resources</h4><a href="#">Blog</a><a href="#">Guides</a><a href="#">Help center</a><a href="#">Community</a><a href="#">Webinars</a></div><div><h4>Legal</h4><a href="#">Privacy policy</a><a href="#">Terms of service</a><a href="#">Cookie settings</a><a href="#">Accessibility</a><a href="#">Imprint</a></div></div><div class="legal"><span>&copy; 2026 Orbit. All rights reserved.</span><span><a href="#">Privacy</a><a href="#">Terms</a><a href="#">Cookies</a><a href="#">Sitemap</a></span></div></footer>
+<script>
+function report(id, data){
+  return fetch('/api/done/' + id, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data)});
+}
+
+var prefs = {product_updates:true, weekly_digest:true, mentions:true, push_comments:true, push_reminders:false};
+var LABELS = {product_updates:'Product updates', weekly_digest:'Weekly digest', mentions:'Mentions and replies', push_comments:'New comments', push_reminders:'Task reminders'};
+var view = document.getElementById('view'), sub = 'general';
+function sw(k){ return '<div class="sw"><span id="l-' + k + '">' + LABELS[k] + '</span><button class="switch" role="switch" aria-labelledby="l-' + k + '" aria-checked="' + prefs[k] + '" data-k="' + k + '"></button></div>'; }
+function render(v){
+  document.querySelectorAll('#nav button').forEach(function(b){ b.classList.toggle('on', b.dataset.v === v); });
+  if(v === 'dashboard') view.innerHTML = '<h1>Good morning, Sam</h1><div class="grid3"><div class="card">Open tasks<br><b>14</b></div><div class="card">Due this week<br><b>5</b></div><div class="card">Completed<br><b>38</b></div></div>';
+  else if(v === 'projects') view.innerHTML = '<h1>Projects</h1><ul><li>Website relaunch</li><li>Q4 campaign</li><li>Mobile app v3</li></ul>';
+  else if(v === 'team') view.innerHTML = '<h1>Team</h1><ul><li>Sam Peeters (owner)</li><li>Noor El Amrani</li><li>Lars de Wit</li></ul>';
+  else {
+    view.innerHTML = '<h1>Settings</h1><div class="sub" style="border-bottom:1px solid #e5e7eb;margin-bottom:14px"><button data-s="general">General</button><button data-s="notifications">Notifications</button><button data-s="security">Security</button></div><div id="sv"></div>';
+    view.querySelectorAll('.sub button').forEach(function(b){ b.onclick = function(){ sub = b.dataset.s; renderSub(); }; });
+    renderSub();
+  }
+}
+function renderSub(){
+  view.querySelectorAll('.sub button').forEach(function(b){ b.classList.toggle('on', b.dataset.s === sub); });
+  var sv = document.getElementById('sv');
+  if(sub === 'general') sv.innerHTML = '<label for="wn">Workspace name</label><input id="wn" type="text" value="Peeters Design"><label for="tz">Time zone</label><select id="tz"><option>Europe/Brussels</option><option>Europe/London</option></select>';
+  else if(sub === 'security') sv.innerHTML = '<p>Two-factor authentication is <b>on</b>.</p><button class="btn secondary" type="button">Manage sessions</button>';
+  else {
+    sv.innerHTML = '<h2 style="margin-top:0">Email</h2>' + sw('product_updates') + sw('weekly_digest') + sw('mentions') + '<h2>Push</h2>' + sw('push_comments') + sw('push_reminders') +
+      '<div class="row" style="margin-top:18px"><button class="btn" type="button" id="save">Save preferences</button><span class="muted" id="saved"></span></div>';
+    sv.querySelectorAll('.switch').forEach(function(s){ s.onclick = function(){ var k = s.dataset.k; prefs[k] = !prefs[k]; s.setAttribute('aria-checked', prefs[k]); document.getElementById('saved').textContent = ''; }; });
+    document.getElementById('save').onclick = function(){ report('local-spa-views', JSON.parse(JSON.stringify(prefs))).then(function(){ document.getElementById('saved').textContent = 'Preferences saved'; }); };
+  }
+}
+document.querySelectorAll('#nav button').forEach(function(b){ b.onclick = function(){ render(b.dataset.v); }; });
+render('dashboard');
+</script>
+</body>
+</html>

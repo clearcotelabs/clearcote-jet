@@ -29,13 +29,37 @@
   const formValue = e => secret(e) ? e.value.length>0 : e.value??null;
   const visible = e => !e.closest('[aria-hidden="true"],[inert]') &&
     e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true});
+  // Labels that name this field. Two labels pointing at one field (a copy-paste slip: for="username" twice) name
+  // two fields: this one takes the last label before it, the other label is for the field after it.
+  const ownLabels = e => {
+    const all=[...(e.labels||[])];
+    if (all.length<2) return all;
+    const before=all.filter(l=>l.compareDocumentPosition(e)&Node.DOCUMENT_POSITION_FOLLOWING);
+    return [before.length ? before[before.length-1] : all[0]];
+  };
+  // A typing field with no label of its own: the label just before it, beside it or in the cell before its
+  // wrapper (a form row: "Subjects" | [field], a label for= another id by mistake). Nearest wrapper first.
+  const typing = e => e.tagName==='TEXTAREA' || e.tagName==='SELECT' ||
+    (e.tagName==='INPUT' && !['checkbox','radio','button','submit','reset','image','hidden','range'].includes(e.type));
+  const nearbyLabel = (e,any=false) => {
+    if (!(any || typing(e)) || (e.labels||[]).length) return '';
+    for (let n=e, depth=0; n && n!==document.body && depth<6; n=n.parentElement, depth++) {
+      for (let p=n.previousElementSibling, k=0; p && k<2; p=p.previousElementSibling, k++) {
+        const l = p.tagName==='LABEL' ? p : (p.children.length<=3 ? p.querySelector('label') : null);
+        const t = l && (l.textContent||'').trim();
+        if (t && t.length<=60) return t;
+        if (p.matches('input,select,textarea,button') || p.querySelector('input,select,textarea')) return '';
+      }
+    }
+    return '';
+  };
   const name = (e,seen=new Set()) => {
     if (!e || seen.has(e)) return '';
     seen.add(e);
     const referenced=(e.getAttribute('aria-labelledby')||'').split(/\s+/)
       .map(id=>name(byId(e,id),seen)).filter(Boolean).join(' ');
     return referenced || e.getAttribute('aria-label') ||
-      [...(e.labels||[])].map(l=>name(l,seen)).filter(Boolean).join(' ') ||
+      ownLabels(e).map(l=>name(l,seen)).filter(Boolean).join(' ') || nearbyLabel(e) ||
       (['button','submit','reset'].includes(e.type) ? e.value : '') || e.getAttribute('alt') ||
       (e.tagName==='INPUT' ? '' : [...e.childNodes].map(n=>n.nodeType===3 ? n.textContent :
         n.nodeType===1 && n.getAttribute('aria-hidden')!=='true' ? name(n,seen) : '').join(' ').trim()) ||
@@ -45,9 +69,11 @@
     'option','gridcell','combobox','textbox','searchbox','spinbutton'];
   const selector='a[href],button,input,textarea,select,summary,[contenteditable="true"],'+
     roles.map(role=>'[role="'+role+'"]').join(',');
+  const clickable=new WeakSet(); // elements with no role that look clickable (see below): buttons to the model
   const role = e => {
     const explicit=e.getAttribute('role');
     if (roles.includes(explicit)) return explicit;
+    if (clickable.has(e)) return 'button';
     if (e.tagName==='BUTTON' || e.tagName==='SUMMARY') return 'button';
     if (e.tagName==='A') return 'link';
     if (e.tagName==='SELECT') return 'combobox';
@@ -57,6 +83,7 @@
       if (['button','submit','reset','image'].includes(e.type)) return 'button';
       if (e.type==='search') return 'searchbox';
       if (e.type==='number') return 'spinbutton';
+      if (e.type==='range') return 'slider';
       if (['text','email','url','tel','password',''].includes(e.type)) return 'textbox';
     }
     return null;
@@ -162,6 +189,28 @@
     }
     return null;
   };
+  // How far to scroll so a control a pinned strip covers sits in the middle of the screen, clear of it.
+  cache.centerDelta=id=>{
+    const e=cache.nodes.get(id);
+    if (!e?.isConnected) return null;
+    const r=e.getBoundingClientRect();
+    return Math.round(r.y+r.height/2-innerHeight/2);
+  };
+  cache.rangePlan=id=>{
+    const e=cache.nodes.get(id);
+    if (!e?.isConnected || e.type!=='range') return null;
+    const n=v=>{ const f=parseFloat(v); return Number.isFinite(f) ? f : null; };
+    const min=n(e.min) ?? 0, max=n(e.max) ?? 100, step=e.step==='any' ? 1 : (n(e.step) || 1);
+    return {min,max,step,value:n(e.value) ?? min};
+  };
+  cache.setRange=(id,v)=>{
+    const e=cache.nodes.get(id);
+    if (!e?.isConnected) return false;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(e,String(v));
+    e.dispatchEvent(new Event('input',{bubbles:true}));
+    e.dispatchEvent(new Event('change',{bubbles:true}));
+    return true;
+  };
   cache.scrolled=pid=>{ const p=cache.nodes.get(pid); return p?.isConnected ? [p.scrollLeft,p.scrollTop] : null; };
   // Links inside closed menus (navigation dropdowns, menu panels, collapsed <details>) are hidden, so they are never
   // among the actions below. The agent asks for them only when it is stuck on a page; each one names its trigger
@@ -193,6 +242,17 @@
       while (li && !visible(li)) li=li.parentElement?.closest('li');
       const t=li && [...li.children].find(c=>!c.contains(a) && usable(c) && c.getBoundingClientRect().height>0);
       if (t) pairs.push([t,li]);
+    }
+    // Cards that show their link only while pointed at (a caption over a picture: "View profile"). The trigger is the
+    // card: its nearest visible wrapper, if that is card-sized rather than a whole section.
+    for (const a of deepAll('a[href]')) {
+      if (shown(a) || a.closest('nav,header,footer,[role="navigation"],[role="menubar"],details')) continue;
+      let card=a.parentElement, hops=0;
+      while (card && hops<4 && !visible(card)) { card=card.parentElement; hops++; }
+      if (!card || card===document.body || !usable(card) || card.contains(document.activeElement)) continue;
+      const r=card.getBoundingClientRect();
+      if (r.width<24 || r.height<24 || r.width*r.height>innerWidth*innerHeight/3) continue;
+      pairs.push([card,card]);
     }
     // First what a scroll box hides (those controls are visible, only scrolled away), so that none of them is taken
     // for a link in a closed menu that happens to contain the box.
@@ -241,18 +301,131 @@
       const text=(mine || p.innerText || '').replace(/\s+/g,' ').trim();
       if (text && text.length<=24) return text;
     }
+    // In a table row, a list item or a card: the row's name, its first cell or first line of text (a file name, an
+    // order number, a person), which is what tells "Add to starred" in one row from the one in the next.
+    const row=e.closest('tr,[role="row"],li,article,[role="listitem"]');
+    if (row && row!==document.body) {
+      const cells=[...row.children].filter(c=>!c.contains(e));
+      for (const c of cells.length ? cells : [row]) {
+        const t=(c.innerText||'').split('\n').map(x=>x.trim()).find(Boolean)||'';
+        if (t && t.length<=48) return t.replace(/\s+/g,' ');
+      }
+    }
     return '';
   };
+  // What covers a control is a strip pinned to an edge of the screen (position fixed or sticky, at most a third of the
+  // screen, not a dialog): scrolling moves the control out from under it.
+  const pinnedStrip=(hit,e)=>{
+    for (let n=hit; n && n!==document.body && n!==document.documentElement; n=n.parentElement) {
+      const p=getComputedStyle(n).position;
+      if (p!=='fixed' && p!=='sticky') continue;
+      if (n.contains(e) || n.closest('dialog,[role="dialog"],[aria-modal="true"]')) return false;
+      const r=n.getBoundingClientRect();
+      return r.height<=innerHeight/3 && (r.top<=4 || r.bottom>=innerHeight-4);
+    }
+    return false;
+  };
+  // The small scroll box (a dropdown's list, a listbox: under half the screen) that has scrolled control `e` out of
+  // its view, or null. Wheeling over the box brings it in (act() does, given `panel`); scrolling the page would not.
+  let boxedCalls=0;
+  const boxed=e=>{
+    if (++boxedCalls>300) return null;
+    const p=scroller(e), v=p && visible(p) && view(p);
+    if (!v || p.getBoundingClientRect().height>innerHeight/2) return null;
+    const r=e.getBoundingClientRect(), cx=r.x+r.width/2, cy=r.y+r.height/2;
+    return cx>=v.left && cx<=v.right && cy>=v.top && cy<=v.bottom ? null : p;
+  };
+  const MORE=/^(load|show|see|view) (more|all)\b|^more (results|reviews|items|products|comments)\b|^(meer|mehr|plus) /i;
+  let offPage=0;
+  // A list's pager: its links read "2" or "Next", which says nothing out of context, so they are named "Pages › 2".
+  const inPager=e=>!!e.closest('[aria-label*="aginat" i],.pagination,.pager,[class*="paginat" i]');
+  const pageLabel=(e,label)=>(label.length<=16 && inPager(e) ? 'Pages › '+label : label).slice(0,200);
   const actions=[];
   const picked=[];
   for (const e of deepAll(selector)) {
     if (!safe(e) || !visible(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
     const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2, rname=role(e);
-    if (!rname || r.width<=0 || r.height<=0 || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;
+    if (!rname || r.width<=0 || r.height<=0) continue;
     if (rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
-    // Covered by a modal/overlay: a user cannot reach it, so it is not offered (the overlay's controls are).
-    if (!e.contains(deepPoint(x,y))) continue;
-    picked.push({e,rname,label:(name(e)||rname).replace(/\s+/g,' ').slice(0,200)});
+    if (['option','menuitem','menuitemradio'].includes(rname) && (x<0 || y<0 || x>=innerWidth || y>=innerHeight ||
+        !e.contains(deepPoint(x,y)))) {
+      const panel=boxed(e);
+      if (panel) {
+        picked.push({e,rname,panel,label:(name(e)||rname).replace(/\s+/g,' ').slice(0,200)});
+        continue;
+      }
+    }
+    if (x<0 || y<0 || x>=innerWidth || y>=innerHeight) {
+      // Above or below the screen: a list's pager and its "Load more" button are offered anyway (a person scrolls to
+      // them without a second thought), as `covered`: act() scrolls them to the middle of the screen first.
+      if (x<0 || x>=innerWidth || offPage>=24 || !['link','button'].includes(rname)) continue;
+      const own=(name(e)||'').replace(/\s+/g,' ').trim();
+      if (!inPager(e) && !MORE.test(own)) continue;
+      offPage++;
+      picked.push({e,rname,covered:true,label:pageLabel(e,own||rname)});
+      continue;
+    }
+    // Covered by a modal/overlay: a user cannot reach it, so it is not offered (the overlay's controls are). Covered
+    // by a strip pinned to the edge of the screen (a sticky header, a cookie or ad bar), it is: a person scrolls it
+    // clear, and act() does too (`covered`).
+    let covered=false;
+    if (!e.contains(deepPoint(x,y))) {
+      if (!pinnedStrip(deepPoint(x,y), e)) continue;
+      covered=true;
+    }
+    picked.push({e,rname,covered,label:pageLabel(e,(name(e)||rname).replace(/\s+/g,' '))});
+  }
+  // Clickable things with no role: an icon with a title or aria-label (a pencil "Edit" in a table row), a <div> with
+  // a click handler attribute. A pointer cursor says they can be clicked; a name says what they do. The outermost
+  // such element only, and never one inside (or around) a control offered above.
+  const offered=new Set(picked.map(c=>c.e));
+  for (const e of deepAll('[title],[aria-label],[onclick],[data-action],[data-toggle]')) {
+    if (offered.has(e) || e.matches(selector) || e.closest(selector) || e.querySelector(selector)) continue;
+    if (!safe(e) || !visible(e) || getComputedStyle(e).cursor!=='pointer') continue;
+    if (e.parentElement && getComputedStyle(e.parentElement).cursor==='pointer' &&
+        e.parentElement.matches('[title],[aria-label],[onclick],[data-action],[data-toggle]')) continue;
+    const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
+    if (r.width<6 || r.height<6 || x<0 || y<0 || x>=innerWidth || y>=innerHeight || !e.contains(deepPoint(x,y))) continue;
+    const label=(e.getAttribute('aria-label')||e.getAttribute('title')||name(e)||'').replace(/\s+/g,' ').trim().slice(0,200);
+    if (!label) continue;
+    clickable.add(e);
+    offered.add(e);
+    picked.push({e,rname:'button',label});
+    if (picked.length>400) break;
+  }
+  // A custom dropdown made of plain elements: its button is focusable (tabindex) and shows a pointer, its rows show a
+  // pointer inside a popup laid over the page (positioned absolute or fixed, with a z-index). Click handlers set from script leave no
+  // attribute, so these are the signs. Pointer-cursor cards in the page's own flow are not offered: they are page
+  // furniture far more often than controls, and would sit in every decision. The button takes the label written
+  // before it ("Language: English (US)"); a row scrolled away in the popup's list comes with its box (`panel`).
+  const inPopup=e=>{
+    for (let n=e.parentElement, hops=0; n && n!==document.body && hops<4; n=n.parentElement, hops++) {
+      const cs=getComputedStyle(n);
+      // Laid over the page (a z-index of its own), not a region a site happens to position.
+      if ((cs.position==='absolute' || cs.position==='fixed') && cs.zIndex!=='auto' &&
+          n.getBoundingClientRect().height<innerHeight*0.8) return true;
+    }
+    return false;
+  };
+  let scanned=0;
+  for (const e of deepAll('[tabindex]:not([tabindex="-1"]),div,li,span,[data-value]').reverse()) {
+    if (++scanned>4000 || picked.length>400) break;
+    if (offered.has(e) || e.closest(selector) || e.querySelector(selector)) continue;
+    if (getComputedStyle(e).cursor!=='pointer' || !visible(e)) continue;
+    const parent=e.parentElement;
+    if (parent && getComputedStyle(parent).cursor==='pointer') continue;
+    const focusable=e.matches('[tabindex]:not([tabindex="-1"])');
+    if (!focusable && !inPopup(e)) continue;
+    const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
+    if (r.width<6 || r.height<6) continue;
+    const panel=boxed(e);
+    if (!panel && (x<0 || y<0 || x>=innerWidth || y>=innerHeight || !e.contains(deepPoint(x,y)))) continue;
+    const text=(e.getAttribute('aria-label')||e.getAttribute('title')||(e.innerText||'')).replace(/\s+/g,' ').trim();
+    if (!text || text.length>60) continue;
+    const before=focusable ? nearbyLabel(e,true) : '';
+    clickable.add(e);
+    offered.add(e);
+    picked.push({e,rname:'button',panel,label:(before && before!==text ? before+': '+text : text).slice(0,200)});
   }
   // Controls that read alike, told apart by what is written beside them — only where that actually differs, and only
   // for the ones that have it: a label nothing distinguishes is left as it is rather than dressed up.
@@ -267,8 +440,9 @@
       if (c.beside && !c.label.toLowerCase().includes(c.beside.toLowerCase()))
         c.label=(c.beside+' '+c.label).slice(0,200);
   }
-  for (const {e,rname,label} of picked) {
-    const base={node:identity(e),role:rname,label};
+  for (const {e,rname,label,covered,panel} of picked) {
+    const base={node:identity(e),role:rname,label,...(covered ? {covered:true} : {}),
+      ...(panel ? {panel:identity(panel)} : {})};
     for (const key of ['checked','selected','expanded']) {
       const value=e.getAttribute('aria-'+key);
       if (value!==null) base[key]=value;
@@ -282,7 +456,7 @@
           current_value:[...e.selectedOptions].map(o=>o.label).join(', '),label:base.label+' → '+o.label});
     } else {
       const editable=!e.readOnly && e.getAttribute('aria-readonly')!=='true' &&
-        (['textbox','searchbox','spinbutton'].includes(rname) ||
+        (['textbox','searchbox','spinbutton','slider'].includes(rname) ||
           (rname==='combobox' && ['INPUT','TEXTAREA'].includes(e.tagName)));
       const value=isSecret ? '' : 'value' in e ? String(e.value) :
         e.isContentEditable || rname==='combobox' ? e.innerText.trim() : '';

@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Your basket | Verde Market</title>
+<style>:root{--accent:#16a34a}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#1f2933;background:#f5f6f8}
+a{color:var(--accent)}
+.topbar{background:#111827;color:#d1d5db;font-size:13px;text-align:center;padding:7px 12px}
+.topbar a{color:#fff}
+header.site{background:#fff;border-bottom:1px solid #e5e7eb}
+.hwrap{max-width:1140px;margin:0 auto;display:flex;align-items:center;gap:28px;padding:14px 20px;flex-wrap:wrap}
+.logo{font-weight:800;font-size:21px;color:var(--accent);text-decoration:none;letter-spacing:-.3px}
+.logo span{color:#111827}
+nav.main{display:flex;gap:18px;flex-wrap:wrap}
+nav.main a{color:#374151;text-decoration:none;font-weight:500}
+nav.main a:hover{color:var(--accent)}
+.hright{margin-left:auto;display:flex;gap:14px;align-items:center}
+.hright a{color:#374151;text-decoration:none;font-size:14px}
+.hsearch{width:220px;padding:7px 10px;border:1px solid #d1d5db;border-radius:18px;font:inherit;font-size:14px}
+.crumbs{max-width:1140px;margin:0 auto;padding:12px 20px 0;font-size:13px;color:#6b7280}
+.crumbs a{color:#6b7280}
+main{max-width:1140px;margin:0 auto;padding:22px 20px 64px}
+h1{font-size:28px;margin:6px 0 14px;letter-spacing:-.4px}
+h2{font-size:20px;margin:22px 0 10px}
+footer.site{background:#111827;color:#9ca3af;padding:40px 20px 24px;font-size:14px}
+.fwrap{max-width:1140px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr);gap:24px}
+footer.site h4{color:#f9fafb;margin:0 0 10px;font-size:14px}
+footer.site a{color:#9ca3af;text-decoration:none;display:block;margin:5px 0}
+.legal{max-width:1140px;margin:26px auto 0;border-top:1px solid #374151;padding-top:16px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px}
+.legal a{display:inline;margin-left:14px}
+.card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:22px}
+label{display:block;font-weight:600;margin:14px 0 6px;font-size:14px}
+input[type=text],input[type=email],input[type=password],input[type=tel],input[type=search],input[type=number],input[type=url],select,textarea{width:100%;padding:10px 12px;border:1px solid #cbd5e1;border-radius:6px;font:inherit;background:#fff;color:inherit}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:0;border-color:transparent}
+.btn{display:inline-block;background:var(--accent);color:#fff;border:0;border-radius:6px;padding:10px 18px;font:inherit;font-weight:600;cursor:pointer;text-decoration:none}
+.btn.secondary{background:#fff;color:#374151;border:1px solid #cbd5e1}
+.btn.ghost{background:transparent;color:var(--accent);border:0}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.err{color:#b91c1c;font-size:13px;margin-top:4px}
+.errbox{background:#fef2f2;border:1px solid #fca5a5;color:#991b1b;padding:10px 14px;border-radius:8px;margin:12px 0;font-size:14px}
+.ok{background:#ecfdf5;border:1px solid #10b981;color:#065f46;padding:12px 16px;border-radius:8px;margin:16px 0}
+.muted{color:#6b7280;font-size:13px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.row{display:flex;gap:12px;align-items:center}
+.check{display:flex;gap:8px;align-items:center;font-weight:400;margin:8px 0}
+.badge{display:inline-block;font-size:12px;padding:2px 8px;border-radius:10px;background:#eef2ff;color:#3730a3}
+.hidden{display:none!important}
+@media (max-width:760px){.fwrap{grid-template-columns:1fr 1fr}.grid2,.grid3{grid-template-columns:1fr}.hsearch{display:none}}
+</style>
+</head>
+<body>
+<div class="topbar">Order before 22:00 for next-day delivery</div><header class="site"><div class="hwrap"><a class="logo" href="#">Verde Market</a><nav class="main"><a href="#">Fruit & veg</a><a href="#">Bakery</a><a href="#">Dairy</a><a href="#">Pantry</a><a href="#">Offers</a></nav><div class="hright"><a href="#">Delivery slots</a><a href="#">Basket (3)</a></div></div></header>
+
+
+<style>.layout{display:grid;grid-template-columns:2fr 1fr;gap:24px;align-items:start}.line{display:flex;justify-content:space-between;padding:12px 0;border-bottom:1px solid #f1f5f9}
+@media (max-width:760px){.layout{grid-template-columns:1fr}}</style>
+<main><h1>Your basket</h1><div class="layout">
+ <section class="card">
+  <div class="line"><span>Organic olive oil 750 ml &times; 2</span><span>&euro;25.90</span></div>
+  <div class="line"><span>Sourdough loaf</span><span>&euro;4.75</span></div>
+  <div class="line"><span>Free-range eggs (10)</span><span>&euro;4.29</span></div>
+  <h2>Gift card</h2>
+  <div class="row"><input type="text" id="gift" placeholder="Gift card number" aria-label="Gift card number"><button class="btn secondary" type="button" id="redeem">Redeem</button></div>
+  <div class="muted" id="giftmsg"></div>
+ </section>
+ <aside class="card">
+  <h2 style="margin-top:0">Summary</h2>
+  <div class="line"><span>Subtotal</span><span id="sub">&euro;34.94</span></div>
+  <div class="line"><span>Discount</span><span id="disc">&euro;0.00</span></div>
+  <div class="line"><b>Total</b><b id="total">&euro;34.94</b></div>
+  <promo-code-box></promo-code-box>
+  <button class="btn" type="button" style="width:100%;margin-top:14px">Go to checkout</button>
+ </aside>
+</div></main>
+<footer class="site"><div class="fwrap"><div><h4>Company</h4><a href="#">About us</a><a href="#">Careers</a><a href="#">Press</a><a href="#">Investors</a><a href="#">Contact</a></div><div><h4>Products</h4><a href="#">Features</a><a href="#">Pricing</a><a href="#">Integrations</a><a href="#">Changelog</a><a href="#">Status</a></div><div><h4>Resources</h4><a href="#">Blog</a><a href="#">Guides</a><a href="#">Help center</a><a href="#">Community</a><a href="#">Webinars</a></div><div><h4>Legal</h4><a href="#">Privacy policy</a><a href="#">Terms of service</a><a href="#">Cookie settings</a><a href="#">Accessibility</a><a href="#">Imprint</a></div></div><div class="legal"><span>&copy; 2026 Verde Market. All rights reserved.</span><span><a href="#">Privacy</a><a href="#">Terms</a><a href="#">Cookies</a><a href="#">Sitemap</a></span></div></footer>
+<script>
+function report(id, data){
+  return fetch('/api/done/' + id, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data)});
+}
+
+document.getElementById('redeem').onclick = function(){ document.getElementById('giftmsg').textContent = 'This gift card number is not valid.'; };
+class PromoCodeBox extends HTMLElement {
+  constructor(){
+    super();
+    var root = this.attachShadow({mode:'open'});
+    root.innerHTML = '<style>:host{display:block;margin-top:14px}label{display:block;font-weight:600;font-size:14px;margin-bottom:6px}.r{display:flex;gap:8px}input{flex:1;padding:9px 10px;border:1px solid #cbd5e1;border-radius:6px;font:inherit}button{background:#16a34a;color:#fff;border:0;border-radius:6px;padding:9px 14px;font:inherit;font-weight:600;cursor:pointer}.m{font-size:13px;margin-top:6px}.bad{color:#b91c1c}.good{color:#15803d}</style>' +
+      '<label for="code">Discount code</label><div class="r"><input id="code" type="text" placeholder="Enter code" autocomplete="off"><button type="button" id="apply">Apply</button></div><div class="m" id="m"></div>';
+    var self = this;
+    root.getElementById('apply').onclick = function(){
+      var c = root.getElementById('code').value.trim().toUpperCase(), m = root.getElementById('m');
+      if(c === 'SPRING25'){
+        m.className = 'm good'; m.textContent = 'Code SPRING25 applied: 25% off.';
+        document.getElementById('disc').textContent = '-€8.74'; document.getElementById('total').textContent = '€26.20';
+        report('local-shadow-dom', {code:c, applied:true});
+      } else { m.className = 'm bad'; m.textContent = c ? 'This code is not valid or has expired.' : 'Enter a code.'; }
+    };
+  }
+}
+customElements.define('promo-code-box', PromoCodeBox);
+</script>
+</body>
+</html>

@@ -95,6 +95,8 @@ async def open_or_reuse(session, url):
 def prepare(page):
     """A tab this process did not open still needs the isolated world and the frame caches that
     new_tab() installs, or nothing can be evaluated in it."""
+    from .browser import watch_dialogs
+    watch_dialogs(page)
     if not hasattr(page, "_ca_world"):
         page.on("crash", lambda *_: setattr(page, "_ca_crashed", True))
         page._ca_world = IsolatedWorld(page)

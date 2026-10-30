@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checkout | Fernwood Home</title>
+<style>:root{--accent:#047857}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#1f2933;background:#f5f6f8}
+a{color:var(--accent)}
+.topbar{background:#111827;color:#d1d5db;font-size:13px;text-align:center;padding:7px 12px}
+.topbar a{color:#fff}
+header.site{background:#fff;border-bottom:1px solid #e5e7eb}
+.hwrap{max-width:1140px;margin:0 auto;display:flex;align-items:center;gap:28px;padding:14px 20px;flex-wrap:wrap}
+.logo{font-weight:800;font-size:21px;color:var(--accent);text-decoration:none;letter-spacing:-.3px}
+.logo span{color:#111827}
+nav.main{display:flex;gap:18px;flex-wrap:wrap}
+nav.main a{color:#374151;text-decoration:none;font-weight:500}
+nav.main a:hover{color:var(--accent)}
+.hright{margin-left:auto;display:flex;gap:14px;align-items:center}
+.hright a{color:#374151;text-decoration:none;font-size:14px}
+.hsearch{width:220px;padding:7px 10px;border:1px solid #d1d5db;border-radius:18px;font:inherit;font-size:14px}
+.crumbs{max-width:1140px;margin:0 auto;padding:12px 20px 0;font-size:13px;color:#6b7280}
+.crumbs a{color:#6b7280}
+main{max-width:1140px;margin:0 auto;padding:22px 20px 64px}
+h1{font-size:28px;margin:6px 0 14px;letter-spacing:-.4px}
+h2{font-size:20px;margin:22px 0 10px}
+footer.site{background:#111827;color:#9ca3af;padding:40px 20px 24px;font-size:14px}
+.fwrap{max-width:1140px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr);gap:24px}
+footer.site h4{color:#f9fafb;margin:0 0 10px;font-size:14px}
+footer.site a{color:#9ca3af;text-decoration:none;display:block;margin:5px 0}
+.legal{max-width:1140px;margin:26px auto 0;border-top:1px solid #374151;padding-top:16px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px}
+.legal a{display:inline;margin-left:14px}
+.card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:22px}
+label{display:block;font-weight:600;margin:14px 0 6px;font-size:14px}
+input[type=text],input[type=email],input[type=password],input[type=tel],input[type=search],input[type=number],input[type=url],select,textarea{width:100%;padding:10px 12px;border:1px solid #cbd5e1;border-radius:6px;font:inherit;background:#fff;color:inherit}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:0;border-color:transparent}
+.btn{display:inline-block;background:var(--accent);color:#fff;border:0;border-radius:6px;padding:10px 18px;font:inherit;font-weight:600;cursor:pointer;text-decoration:none}
+.btn.secondary{background:#fff;color:#374151;border:1px solid #cbd5e1}
+.btn.ghost{background:transparent;color:var(--accent);border:0}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.err{color:#b91c1c;font-size:13px;margin-top:4px}
+.errbox{background:#fef2f2;border:1px solid #fca5a5;color:#991b1b;padding:10px 14px;border-radius:8px;margin:12px 0;font-size:14px}
+.ok{background:#ecfdf5;border:1px solid #10b981;color:#065f46;padding:12px 16px;border-radius:8px;margin:16px 0}
+.muted{color:#6b7280;font-size:13px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.row{display:flex;gap:12px;align-items:center}
+.check{display:flex;gap:8px;align-items:center;font-weight:400;margin:8px 0}
+.badge{display:inline-block;font-size:12px;padding:2px 8px;border-radius:10px;background:#eef2ff;color:#3730a3}
+.hidden{display:none!important}
+@media (max-width:760px){.fwrap{grid-template-columns:1fr 1fr}.grid2,.grid3{grid-template-columns:1fr}.hsearch{display:none}}
+</style>
+</head>
+<body>
+<div class="topbar">Free shipping on orders over &euro;50 &middot; 30-day returns</div><header class="site"><div class="hwrap"><a class="logo" href="#">Fernwood Home</a><nav class="main"><a href="#">Living</a><a href="#">Bedroom</a><a href="#">Kitchen</a><a href="#">Outdoor</a><a href="#">Sale</a></nav><div class="hright"><a href="#">Account</a><a href="#">Cart (2)</a></div></div></header>
+
+
+<style>
+.steps{display:flex;gap:8px;margin:0 0 18px;padding:0;list-style:none}
+.steps li{flex:1;padding:10px;border-bottom:3px solid #e5e7eb;color:#6b7280;font-weight:600;font-size:14px}
+.steps li.on{border-color:var(--accent);color:#111827}
+.opt{display:flex;gap:12px;align-items:center;border:1px solid #d1d5db;border-radius:8px;padding:12px 14px;margin:10px 0;font-weight:400}
+.opt b{display:block}
+.layout{display:grid;grid-template-columns:2fr 1fr;gap:24px;align-items:start}
+@media (max-width:760px){.layout{grid-template-columns:1fr}}
+</style>
+<main>
+ <h1>Checkout</h1>
+ <div class="layout">
+ <div class="card" id="wizard">
+  <ol class="steps"><li id="s1" class="on">1. Shipping address</li><li id="s2">2. Delivery</li><li id="s3">3. Payment</li></ol>
+  <div id="err" class="errbox hidden"></div>
+  <section id="p1">
+   <label for="name">Full name</label><input id="name" type="text" autocomplete="name">
+   <label for="street">Street and house number</label><input id="street" type="text" autocomplete="address-line1">
+   <div class="grid2">
+    <div><label for="postcode">Postcode</label><input id="postcode" type="text" autocomplete="postal-code"></div>
+    <div><label for="city">City</label><input id="city" type="text" autocomplete="address-level2"></div>
+   </div>
+   <label for="country">Country</label><select id="country"><option value="NL" selected>Netherlands</option><option value="BE">Belgium</option><option value="DE">Germany</option><option value="LU">Luxembourg</option></select>
+   <div style="margin-top:18px;text-align:right"><button class="btn" type="button" id="n1">Next</button></div>
+  </section>
+  <section id="p2" class="hidden">
+   <h2 style="margin-top:0">Choose a delivery method</h2>
+   <label class="opt"><input type="radio" name="delivery" value="standard" checked><span><b>Standard</b><span class="muted">2&ndash;4 working days &middot; Free</span></span></label>
+   <label class="opt"><input type="radio" name="delivery" value="express"><span><b>Express</b><span class="muted">Next working day &middot; &euro;9.95</span></span></label>
+   <label class="opt"><input type="radio" name="delivery" value="pickup"><span><b>Pickup point</b><span class="muted">Collect from a nearby shop &middot; &euro;1.95</span></span></label>
+   <div style="margin-top:18px" class="row"><button class="btn secondary" type="button" id="b2">Back</button><span style="flex:1"></span><button class="btn" type="button" id="n2">Next</button></div>
+  </section>
+  <section id="p3" class="hidden">
+   <h2 style="margin-top:0">How would you like to pay?</h2>
+   <label class="opt"><input type="radio" name="payment" value="ideal"><span><b>iDEAL</b><span class="muted">Pay with your Dutch bank</span></span></label>
+   <label class="opt"><input type="radio" name="payment" value="paypal"><span><b>PayPal</b><span class="muted">You will be redirected to PayPal</span></span></label>
+   <label class="opt"><input type="radio" name="payment" value="invoice"><span><b>Pay later</b><span class="muted">Invoice, pay within 30 days</span></span></label>
+   <div style="margin-top:18px" class="row"><button class="btn secondary" type="button" id="b3">Back</button><span style="flex:1"></span><button class="btn" type="button" id="place">Place order</button></div>
+  </section>
+ </div>
+ <aside class="card">
+  <h2 style="margin-top:0">Order summary</h2>
+  <div class="row" style="justify-content:space-between"><span>Linen throw blanket, sand</span><span>&euro;59.00</span></div>
+  <div class="row" style="justify-content:space-between"><span>Ceramic vase, small</span><span>&euro;24.50</span></div>
+  <hr><div class="row" style="justify-content:space-between"><b>Subtotal</b><b>&euro;83.50</b></div>
+  <p class="muted">Free returns within 30 days.</p>
+  <a href="#">Have a gift card?</a>
+ </aside>
+ </div>
+</main>
+<footer class="site"><div class="fwrap"><div><h4>Company</h4><a href="#">About us</a><a href="#">Careers</a><a href="#">Press</a><a href="#">Investors</a><a href="#">Contact</a></div><div><h4>Products</h4><a href="#">Features</a><a href="#">Pricing</a><a href="#">Integrations</a><a href="#">Changelog</a><a href="#">Status</a></div><div><h4>Resources</h4><a href="#">Blog</a><a href="#">Guides</a><a href="#">Help center</a><a href="#">Community</a><a href="#">Webinars</a></div><div><h4>Legal</h4><a href="#">Privacy policy</a><a href="#">Terms of service</a><a href="#">Cookie settings</a><a href="#">Accessibility</a><a href="#">Imprint</a></div></div><div class="legal"><span>&copy; 2026 Fernwood Home. All rights reserved.</span><span><a href="#">Privacy</a><a href="#">Terms</a><a href="#">Cookies</a><a href="#">Sitemap</a></span></div></footer>
+<script>
+function report(id, data){
+  return fetch('/api/done/' + id, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data)});
+}
+
+function $(id){ return document.getElementById(id); }
+function show(n){ [1,2,3].forEach(function(i){ $('p'+i).classList.toggle('hidden', i!==n); $('s'+i).classList.toggle('on', i===n); }); $('err').classList.add('hidden'); }
+function err(m){ $('err').textContent = m; $('err').classList.remove('hidden'); }
+function radio(n){ var r = document.querySelector('input[name='+n+']:checked'); return r ? r.value : null; }
+$('n1').onclick = function(){
+  var miss = ['name','street','postcode','city'].filter(function(i){ return !$(i).value.trim(); });
+  if(miss.length){ err('Please complete all address fields.'); return; }
+  show(2);
+};
+$('b2').onclick = function(){ show(1); };
+$('n2').onclick = function(){ show(3); };
+$('b3').onclick = function(){ show(2); };
+$('place').onclick = function(){
+  if(!radio('payment')){ err('Choose a payment method.'); return; }
+  var d = {name:$('name').value.trim(), street:$('street').value.trim(), postcode:$('postcode').value.trim(), city:$('city').value.trim(),
+    country:$('country').value, delivery:radio('delivery'), payment:radio('payment')};
+  report('local-checkout-wizard', d).then(function(){ $('wizard').innerHTML = '<h2>Thank you!</h2><div class="ok">Order FW-20931 has been placed.</div>'; });
+};
+</script>
+</body>
+</html>

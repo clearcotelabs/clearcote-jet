@@ -200,6 +200,17 @@ async def choose(page, goal, history):
     else:
         action = controls.get(operation) or {"id": operation, "kind": operation.lower(), "label": operation}
         probability = operation_answer["probabilities"][operation]
+    fallback = None
+    if operation == "BLOCKED" and "CLICK" in targets:
+        # The click target head is answered in the same request: the clicks the model rates best (weighted by how
+        # much clicking had at all), for the loop to try the best untried one before giving up.
+        try:
+            click = validate_choice(result["answers"].get("click_target", {}), targets["CLICK"])
+            weight = operation_answer["probabilities"].get("CLICK", 0)
+            fallback = [{"action": targets["CLICK"][i], "probability": round(weight * p, 3)}
+                        for i, p in sorted(click["probabilities"].items(), key=lambda kv: -kv[1])[:5]]
+        except (ValueError, KeyError, TypeError):
+            fallback = None
     return {
         "action": action,
         "operation": operation,
@@ -216,6 +227,7 @@ async def choose(page, goal, history):
         ],
         "usage": result.get("usage", {}),
         "latency_ms": round((time.perf_counter() - started) * 1000),
+        **({"fallback": fallback} if fallback else {}),
     }
 
 
@@ -238,17 +250,40 @@ GOAL_SPAN_WORDS = 5
 MAX_GOAL_SPANS = 200
 
 
+# Words that introduce a longer value in a goal: "with the text ...", "titled ...", "a note saying ...".
+VALUE_CUES = re.compile(r"\b(?:text|titled|title|named|called|saying|says|message|note|comment|description|body|"
+                        r"subject|reply|answer|write|type|enter)\b\s*:?\s*", re.I)
+CLAUSE_END = re.compile(r"\s*(?:[,;]|\.(?:\s|$)|\s\(|\s(?:and|then|but)\s)")
+
+
+def long_values(goal):
+    """Values longer than GOAL_SPAN_WORDS words: a quoted text, and what follows a cue word up to the end of its clause
+    ("with the text Our new office opens in October, and publish it" -> "Our new office opens in October")."""
+    out = [m.group(1).strip() for m in re.finditer(r"[\"“‘']([^\"”’']{3,300})[\"”’']", goal)]
+    for m in VALUE_CUES.finditer(goal):
+        rest = goal[m.end():]
+        stop = CLAUSE_END.search(rest)
+        value = (rest[:stop.start()] if stop else rest).strip().strip("\"'“”‘’").rstrip(".")
+        if len(value.split()) > GOAL_SPAN_WORDS and len(value) <= 300:
+            out.append(value)
+    return [v for i, v in enumerate(out) if v and v not in out[:i]]
+
+
 def goal_spans(goal):
-    """Every run of 1-5 consecutive words of the goal, edge punctuation trimmed: the values a field may get."""
+    """Every run of 1-5 consecutive words of the goal, edge punctuation trimmed: the values a field may get. Longer
+    values a goal introduces ("with the text ...", a quoted text) come first, whole."""
     # A {{slot}} is one word whose braces are not edge punctuation: it is typed as written (see slots.py).
     words = SLOT.sub(lambda m: "\ue000" + m.group(1) + "\ue001", goal).split()
-    spans = []
+    spans = long_values(goal)
     for n in range(1, GOAL_SPAN_WORDS + 1):
         for i in range(len(words) - n + 1):
-            span = " ".join(words[i:i + n]).strip(".,;:!?()[]{}\"'“”‘’")
-            span = span.replace("\ue000", "{{").replace("\ue001", "}}")
-            if span and span not in spans:
-                spans.append(span)
+            raw = " ".join(words[i:i + n])
+            # Edge punctuation trimmed, and also kept where it may be part of the value (a password ending in "!"):
+            # only sentence punctuation and quotes come off that second form.
+            for span in (raw.strip(".,;:!?()[]{}\"'“”‘’"), raw.strip("\"'“”‘’()[]").rstrip(".,;:")):
+                span = span.replace("\ue000", "{{").replace("\ue001", "}}")
+                if span and span not in spans:
+                    spans.append(span)
     return spans[:MAX_GOAL_SPANS]
 
 

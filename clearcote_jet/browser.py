@@ -11,11 +11,13 @@ import base64
 import json
 import logging
 import random
+import re
 import sys
 from pathlib import Path
 from urllib.parse import quote
 
 from clearcote.async_api import launch_persistent_context
+from .model import NeedsInput
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
 
@@ -30,6 +32,63 @@ FIND_FLICKS = 12  # with no anchor to jump to, at most this many scrolls of abou
 DEFAULT_PROFILE = Path.home() / ".clearcote-jet" / "profile"
 SELECT_ALL = "Meta+A" if sys.platform == "darwin" else "Control+A"
 log = logging.getLogger("clearcote-jet")
+
+
+# WAIT: how long the page gets to change (a result loading, a control turning on) before the model looks again.
+WAIT_SECONDS = 8
+
+def watch_dialogs(page):
+    """Keep the page's alert, confirm and prompt dialogs open for the run to answer, instead of having them dismissed
+    unseen (Playwright's default, which cancels every confirm and leaves every prompt empty)."""
+    if getattr(page, "_ca_dialogs", False):
+        return
+    page._ca_dialogs, page._ca_dialog, page._ca_dialog_text, page._ca_pending = True, None, None, None
+
+    def opened(dialog):
+        page._ca_dialog, page._ca_dialog_text = dialog, None
+    page.on("dialog", opened)
+
+
+def dialog_state(page):
+    """What the run sees while a dialog is open: its message and its buttons (and the answer field of a prompt)."""
+    d, typed = page._ca_dialog, page._ca_dialog_text
+    kind = d.type  # alert, confirm, prompt, beforeunload
+    message = " ".join((d.message or "").split())[:120]
+    actions = [{"id": "e1", "node": -1, "kind": "click", "role": "button", "value": "", "dialog": "accept",
+                "label": f"OK: {message}" if message else "OK (page dialog)"}]
+    if kind != "alert":
+        actions.append({"id": "e2", "node": -2, "kind": "click", "role": "button", "value": "", "dialog": "dismiss",
+                        "label": "Cancel (page dialog)"})
+    if kind == "prompt":
+        actions.append({"id": "e3", "node": -3, "kind": "fill", "role": "textbox", "dialog": "type",
+                        "value": typed if typed is not None else d.default_value,
+                        "label": f"Answer to: {d.message}"[:200]})
+    marker = json.dumps(["dialog", kind, d.message, typed])
+    return {"url": page.url, "title": "", "ready": "complete", "scroll": {"y": 0, "height": 1, "vh": 1},
+            "text": f"The page shows a {kind} dialog: {d.message}", "actions": actions, "marker": marker,
+            "page_key": marker, "guards": {}}
+
+
+async def answer_dialog(page, how, text=None):
+    d = getattr(page, "_ca_dialog", None)
+    if d is None:
+        raise StalePage("The dialog is gone. Observe again.")
+    if how == "type":
+        page._ca_dialog_text = text or ""
+        return
+    page._ca_dialog = None
+    if how == "accept":
+        typed = page._ca_dialog_text
+        await (d.accept(typed if typed is not None else d.default_value) if d.type == "prompt" else d.accept())
+    else:
+        await d.dismiss()
+    pending, page._ca_pending = getattr(page, "_ca_pending", None), None
+    if pending is not None:
+        # The step that opened the dialog (its typing after a click, say) finishes now, unless another dialog opens.
+        await asyncio.wait({pending}, timeout=5)
+        if getattr(page, "_ca_dialog", None) is not None and not pending.done():
+            page._ca_pending = pending
+    await asyncio.sleep(0.1)
 
 
 class StalePage(ValueError):
@@ -220,6 +279,7 @@ class Session:
                  and reuse_blank]
         page = blank[0] if blank else await self.context.new_page()
         page.on("crash", lambda *_: setattr(page, "_ca_crashed", True))
+        watch_dialogs(page)
         page._ca_world = IsolatedWorld(page)
         page._ca_main, page._ca_frames, page._ca_oopif = None, {}, {}  # see _frames()
         if url:
@@ -236,9 +296,10 @@ class Session:
 
     @staticmethod
     async def _eval(page, expression, frame=None, await_promise=False):
-        """Evaluate in the main frame's isolated world, or in child frame `frame`'s (None if it is gone)."""
+        """Evaluate in the main frame's isolated world, or in child frame `frame`'s (None if it is gone, and None while
+        an alert/confirm/prompt is open: the page's scripts are paused until it is answered, so this would wait forever)."""
         world = page._ca_world if frame is None else page._ca_frames.get(frame, {}).get("world")
-        if not world:
+        if not world or getattr(page, "_ca_dialog", None) is not None:
             return None
         return await (world.evaluate(expression, await_promise=True) if await_promise else world.evaluate(expression))
 
@@ -339,6 +400,9 @@ class Session:
     async def _snapshot(self, page):
         """The main frame's snapshot plus, from every child frame a person can see, its text and the controls they can
         reach. Frame controls carry `frame`; each frame's page key and guards are kept in state["frames"]."""
+        watch_dialogs(page)
+        if getattr(page, "_ca_dialog", None) is not None:
+            return dialog_state(page)  # the page's scripts wait for the dialog: nothing can be read from it now
         state = await self._eval(page, SNAPSHOT_JS)
         if not state:
             return state
@@ -406,9 +470,10 @@ class Session:
         return await self._with_menus(page, state) if menus else state
 
     async def _observe(self, page, after=None):
-        if after and after["kind"] == "fill" and after.get("role") == "combobox":
-            # Let autocomplete suggestions arrive before the model chooses from an incomplete popup.
-            for _ in range(8):
+        if after and after["kind"] == "fill" and after.get("role") in ("combobox", "textbox", "searchbox"):
+            # Let autocomplete suggestions arrive before the model chooses from an incomplete popup: a combobox gets
+            # up to 1.5 s (suggestions come from a request per keystroke), any other field 0.8 s.
+            for _ in range(60 if after.get("role") == "combobox" else 32):
                 await asyncio.sleep(0.025)
                 if await self._eval(page, _OPTIONS_VISIBLE):
                     break
@@ -431,8 +496,21 @@ class Session:
             return state
         raise StalePage("Page did not settle")
 
+    async def wait_for_change(self, page, state, seconds=WAIT_SECONDS):
+        """Until the page differs from `state` (results arrived, a spinner went), or `seconds` pass. True if it changed."""
+        deadline = asyncio.get_running_loop().time() + seconds
+        while asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.25)
+            self.check_open(page)
+            current = await self._snapshot(page)
+            if current and current["marker"] != state["marker"]:
+                return True
+        return False
+
     async def fresh(self, page, state, action=None):
         self.last_diff = ""
+        if action is not None and action.get("dialog"):
+            return getattr(page, "_ca_dialog", None) is not None
         if action is not None and action["kind"] in {"click", "select"}:
             frame = action.get("frame")
             current = await self._eval(
@@ -453,9 +531,34 @@ class Session:
         self.check_open(page)
         if not await self.fresh(page, state, action):
             raise StalePage("Page changed since this decision. Observe again.")
+        if action.get("dialog"):
+            await answer_dialog(page, action["dialog"], text)
+            return
+        # A click that opens an alert/confirm/prompt does not finish until the dialog is answered (the mouse-up waits
+        # for the page's click handler, which waits for the dialog). So the step ends as soon as a dialog opens; the
+        # rest of it finishes when the dialog is answered (answer_dialog).
+        watch_dialogs(page)
+        job = asyncio.ensure_future(self._act(page, state, action, text))
+        try:
+            while not job.done():
+                if getattr(page, "_ca_dialog", None) is not None:
+                    job.add_done_callback(lambda j: j.cancelled() or j.exception())  # its error is not the run's
+                    if getattr(page, "_ca_pending", None) is None or page._ca_pending.done():
+                        page._ca_pending = job
+                    return
+                await asyncio.wait({job}, timeout=0.05)
+        except asyncio.CancelledError:
+            job.cancel()  # the run was stopped: so is its click or typing
+            raise
+        return job.result()
+
+    async def _act(self, page, state, action, text=None):
         kind = action["kind"]
+        if kind == "key":
+            await page.keyboard.press(action["key"])
+            return
         if kind == "wait":
-            await asyncio.sleep(0.1)
+            await self.wait_for_change(page, state)
             return
         if kind == "scroll":
             await page.mouse.wheel(0, action["delta"])  # humanized: stepped wheel ticks when humanize is on
@@ -473,6 +576,15 @@ class Session:
         if action.get("panel") is not None:
             await self._press_in_panel(page, int(action["panel"]), node)
             return
+        if action.get("covered") and frame is None:
+            # Under a sticky header, a cookie bar or an ad strip: scroll it to the middle of the screen first.
+            delta = await self._eval(page, f"window.__ca?.centerDelta({node})")
+            if delta:
+                await page.mouse.wheel(0, delta)
+                await asyncio.sleep(0.3)
+        if kind == "fill" and action.get("role") == "slider":
+            await self._set_range(page, node, text, frame, action.get("label"))
+            return
         await self._press(page, node, kind, frame)
         if kind == "fill":
             if self.humanize:
@@ -484,6 +596,32 @@ class Session:
             if self.humanize:
                 await asyncio.sleep(random.uniform(0.05, 0.15))
             await page.keyboard.type(text)  # humanized per-key typing when humanize is on
+
+    async def _set_range(self, page, node, text, frame=None, label=None):
+        """Set a slider the way a person does with the keyboard: click it, Home, then arrow right step by step."""
+        plan = await self._eval(page, f"window.__ca?.rangePlan({node})", frame)
+        if not plan:
+            raise StalePage("Slider is gone. Observe again.")
+        # The number in the value: "750", "750 euros", "€ 1,5", "40%".
+        plain = re.sub(r"(?<=\d)[,.](?=\d{3}(?!\d))", "", str(text or ""))  # "1,500" and "1.500" are 1500
+        number = re.search(r"-?\d+(?:[.,]\d+)?", plain)
+        if not number:
+            raise NeedsInput(label or "slider")
+        target = float(number.group().replace(",", "."))
+        target = min(max(target, plan["min"]), plan["max"])
+        steps = round((target - plan["min"]) / plan["step"])
+        if steps > 200:
+            # Hundreds of arrow presses take minutes: set it the way the slider's own drag does (value, then its input
+            # and change events) after focusing it with a click.
+            await self._press(page, node, "click", frame)
+            await self._eval(page, f"window.__ca?.setRange({node}, {json.dumps(target)})", frame)
+            return
+        await self._press(page, node, "click", frame)
+        await page.keyboard.press("Home")
+        for _ in range(min(steps, 1000)):
+            await page.keyboard.press("ArrowRight")
+            if self.humanize:
+                await asyncio.sleep(random.uniform(0.02, 0.06))
 
     async def _hits(self, page, node, x, y, frame=None):
         """Does the tab point (x, y) land on the node: inside its frame, and on that frame through every enclosing one?"""

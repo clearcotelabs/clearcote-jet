@@ -7,9 +7,18 @@ its matching autocomplete suggestion selected. For date pickers, CLICK the field
 Set every requested filter/control; a matching result alone does not prove a requested filter was set.
 Do not toggle a checkbox, switch, or radio already in the requested state.
 Submit populated search fields before opening a result; a populated field alone is not an applied search.
-WAIT only when the needed control is absent/disabled, or submitted results are still loading.
+WAIT only when the needed control is absent/disabled, or submitted results are still loading (a spinner,
+"Loading..." text, a disabled field right after a click): WAIT waits until the page changes.
 If Search/Submit is visible and the required fields are ready, CLICK it immediately.
 Recent WAIT actions are not evidence of loading. Prefer a useful visible control over WAIT.
+When the goal asks for an action a number of times, count it in recent_actions before choosing DONE.
+If the item the goal names is not on this page of a list and a Next, page-number ("Pages › 2") or Load more control is
+offered, CLICK it. A feed that loads more as you scroll ends only at an end message or when scrolling adds nothing:
+keep scrolling down until then before BLOCKED. A look-alike ("Peter K." for "Pieter K.") is not the item: keep looking.
+Typing into a form or dialog does not save it: CLICK its Save, Submit, Update or Apply before DONE.
+After typing into a field that shows suggestions ("From › Amsterdam Centraal"), CLICK the matching one before the next
+field: many forms take only a value chosen from the list. If the page shows an error after a step ("choose a station
+from the list", "this field is required"), do what it asks instead of BLOCKED.
 DONE requires visible evidence that ALL requirements are satisfied. If asked to open a result,
 a matching link is not enough. BLOCKED means no supported operation can make progress, OR the only useful
 moves repeat a path that recent_actions (url → led_to) show was already followed and came back without
@@ -21,7 +30,9 @@ A cookie-consent wall, overlay, or dialog in any language that stands between th
 is progress to clear, not a block: CLICK its reject/decline or close button (accept only if there is none)."""
 
 TARGET = """Choose the best observed target if the next operation is the one specified in this question.
-Use the user's entire goal, field values, nearby text, and recent actions. This question chooses only
+Use the user's entire goal, field values, nearby text, and recent actions. Names, numbers and codes in the goal
+must match exactly: "Pieter K." is not "Peter K." or "Pieter van K.", #1043 is not #1403. When nothing matches
+exactly, choose what shows more of the list (Load more, a next page) rather than a near match. This question chooses only
 a target for that operation; another question decides which operation to execute. Do not choose
 a field that already contains the requested value. Choose only an offered element index.
 Role, current value and state for each index are in `elements`.

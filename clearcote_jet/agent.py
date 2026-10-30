@@ -1,6 +1,7 @@
 """The loop: observe → the decision model picks a step → (a value for TYPE_TEXT) → humanized act → repeat."""
 
 import inspect
+import re
 import time
 
 from playwright.async_api import Error as PlaywrightError
@@ -14,11 +15,123 @@ from .shortcut import find_shortcut
 from .slots import SECRETS, MissingValue, Values, each_string, slots, token
 
 TOP_BLOCKS = 8
+# Before a run ends as blocked, the page gets this long to change (results loading, a control turning on).
+BLOCKED_WAIT_SECONDS = 6
+# A BLOCKED becomes the model's best untried click when clicking had at least this much of its weight (P(CLICK) times
+# the target's probability): a real candidate, not noise.
+FALLBACK_MIN = 0.02
 
 
 def _hidden(action):
     """A control offered only when the run is stuck: a link in a closed menu, or one scrolled away in a scroll box."""
     return action.get("menu") is not None or action.get("panel") is not None
+
+
+KEYS = {"enter": "Enter", "return": "Enter", "escape": "Escape", "esc": "Escape", "tab": "Tab",
+        "backspace": "Backspace", "delete": "Delete", "space": " ", "spacebar": " ", "up arrow": "ArrowUp",
+        "arrow up": "ArrowUp", "down arrow": "ArrowDown", "arrow down": "ArrowDown", "left arrow": "ArrowLeft",
+        "arrow left": "ArrowLeft", "right arrow": "ArrowRight", "arrow right": "ArrowRight", "page down": "PageDown",
+        "page up": "PageUp", "home": "Home", "end": "End"}
+
+
+def goal_keys(goal):
+    """Keys the goal asks to press ("press Escape in the field", "hit the Enter key"), as steps the model can choose.
+    Only when the goal speaks of pressing or keys: "enter your name" names no key."""
+    low = (goal or "").lower()
+    out, seen = [], set()
+    for word, key in KEYS.items():
+        w = re.escape(word)
+        if key not in seen and re.search(rf"\b(?:press|hit|tap)\s+(?:the\s+)?{w}\b|\b{w}\s+key\b", low):
+            seen.add(key)
+            name = "Space" if key == " " else key
+            out.append({"id": f"key_{name.lower()}", "kind": "key", "key": key,
+                        "label": f"Press the {name} key (in the field or page that has focus)"})
+    return out
+
+
+SEARCHLIKE = re.compile(r"\b(search|find|query|look ?up|filter|zoek\w*|such(?:e|en)|buscar|recherch\w*)\b", re.I)
+
+
+def searchlike(step):
+    """A field Enter submits: a search box, a combobox, or a one-line field named for searching. Not a form's address
+    or message field, where Enter adds a line or does nothing."""
+    return step.get("role") in ("searchbox", "combobox") or bool(SEARCHLIKE.search(step.get("action") or ""))
+
+
+NUMBERS = {"once": 1, "twice": 2, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+           "nine": 9, "ten": 10}
+
+
+def goal_times(goal):
+    """How many times the goal asks for a step: "three times", "5 times", "twice"; None when it does not say."""
+    m = re.search(r"\b(\d{1,2}|two|three|four|five|six|seven|eight|nine|ten)\s+times\b|\b(twice)\b", goal or "", re.I)
+    if not m:
+        return None
+    word = (m.group(1) or m.group(2)).lower()
+    return int(word) if word.isdigit() else NUMBERS[word]
+
+
+def _short_of_count(goal, history, state):
+    """The step to do again when the goal asks for the last click N times ("click Add Element exactly three times":
+    the count right after that control's name), it was done fewer than N times in a row, it is still offered and it
+    is not irreversible; else None."""
+    if not history or history[-1]["kind"] != "click":
+        return None
+    label = history[-1]["action"]
+    near = re.search(re.escape(label) + r"[^.,;]{0,25}?\b((?:\d{1,2}|two|three|four|five|six|seven|eight|nine|ten)\s+times"
+                     r"|twice)\b", goal or "", re.I)
+    times = near and goal_times(near.group(1))
+    if not times:
+        return None
+    done = 0
+    for h in reversed(history):
+        if h["kind"] != "click" or h["action"] != label:
+            break
+        done += 1
+    if done >= times:
+        return None
+    return next((a for a in state["actions"] if a.get("kind") == "click" and a.get("label") == label
+                 and not irreversible(a)), None)
+
+
+def _typed_suggestion(step, state):
+    """The suggestion offered for the field just typed into whose text is exactly what was typed ("From › Amsterdam
+    Centraal" after typing "Amsterdam Centraal" into From), else None."""
+    typed = (step.get("text") or "").strip().lower()
+    if not typed:
+        return None
+    want = f"{step['action']} › {typed}".lower()
+    return next((a for a in state["actions"] if a.get("kind") == "click" and a.get("label", "").lower() == want), None)
+
+
+def _feed_grows(history, state):
+    """Scroll down again rather than stop: the last scroll made the page taller (more loaded), the page goes on below,
+    and fewer than MAX_SCROLL_STREAK scrolls were made in a row. The Scroll down action, or None."""
+    if not history or history[-1]["kind"] != "scroll" or not history[-1].get("grew"):
+        return None
+    streak = 0
+    for h in reversed(history):
+        if h["kind"] != "scroll":
+            break
+        streak += 1
+    if streak >= MAX_SCROLL_STREAK - 1:
+        return None
+    return next((a for a in state["actions"] if a.get("id") == "scroll_down"), None)
+
+
+def _tried_here(action, state, history):
+    """This control was already used on this page (same label, same URL)."""
+    here = state["url"]
+    return any(h.get("action") == action.get("label") and h.get("url") == here for h in history)
+
+
+def _useless_key(action, state):
+    """A control that changed nothing: this control (its node) on this page."""
+    return action.get("kind"), action.get("label"), action.get("node"), _page_of(state["url"])
+
+
+def _is_useless(action, state, useless):
+    return _useless_key(action, state) in useless
 
 
 def _page_of(url):
@@ -99,11 +212,31 @@ async def _run(session, goal, page, on_step, history, confirm, learn, approve, m
     # offered too, because the run got stuck there: the model chose BLOCKED, or scrolled MENU_SCROLL_STREAK times in a
     # row. Elsewhere they stay out, as every offered link costs tokens in every decision.
     menus_on = set()
+    # Page states the run already waited on before taking BLOCKED: a page still loading (a spinner, a control about to
+    # turn on) looks stuck for a few seconds; one wait per state tells that apart from a real dead end.
+    # Pages (not page states: a clock or a carousel changes those every second) where a BLOCKED already waited, or
+    # was already decided again without its useless steps.
+    waited_on = set()
+    retried_on = set()
+    fell_back = set()  # pages where a BLOCKED was already turned into the model's best untried click
+    picked_suggestions = set()  # suggestions chosen because they match what was typed (once each)
+    # (kind, label, text) of an action that changed nothing, with the URL it was tried on: not done again there.
+    useless = set()
+
+    keys = goal_keys(goal)
 
     async def look(after=None):
         if _page_of(page.url) in menus_on:
-            return await session.observe(page, after=after, menus=True)
-        return await session.observe(page, after=after)
+            state = await session.observe(page, after=after, menus=True)
+        else:
+            state = await session.observe(page, after=after)
+        extra = list(keys)
+        last = history[-1] if history else None
+        if last and last["kind"] == "fill" and searchlike(last) and not any(k["key"] == "Enter" for k in keys):
+            label = last["action"]
+            extra.append({"id": "key_enter", "kind": "key", "key": "Enter",
+                          "label": f"Press Enter in {label!r} (submits it, as a search box's Search button does)"})
+        return {**state, "actions": state["actions"] + extra} if extra else state
 
     try:
         state = await look()
@@ -125,6 +258,46 @@ async def _run(session, goal, page, on_step, history, confirm, learn, approve, m
                 if any(_hidden(a) for a in wider["actions"]):
                     state, verdict = wider, None
                     continue
+            if operation == "BLOCKED" and useless and _page_of(state["url"]) not in retried_on:
+                # Blocked right after a step that changed nothing (a link that goes nowhere): that step is no way
+                # forward, but another control may be. Decide once more without it.
+                retried_on.add(_page_of(state["url"]))
+                narrower = {**state, "actions": [a for a in state["actions"] if not _is_useless(a, state, useless)]}
+                if any(a.get("kind") in ("click", "fill", "select") for a in narrower["actions"]):
+                    state, verdict = narrower, None
+                    continue
+            if history and history[-1]["kind"] == "fill" and (pick := _typed_suggestion(history[-1], state)) \
+                    and decision["action"].get("label") != pick["label"] and pick["label"] not in picked_suggestions \
+                    and not irreversible(pick):
+                # Typed "Amsterdam Centraal" and the list offers exactly that: choose it, as a person does. Many
+                # forms take only a value picked from their list.
+                picked_suggestions.add(pick["label"])
+                action, operation = pick, "CLICK"
+                decision = {**decision, "action": action, "operation": operation}
+            if operation == "DONE" and (again := _short_of_count(goal, history, state)):
+                # "Click Add exactly three times": counting repeats on a page is easy to get wrong, the history is not.
+                action, operation = again, "CLICK"
+                decision = {**decision, "action": action, "operation": operation}
+            if operation == "BLOCKED" and (more := _feed_grows(history, state)):
+                # A feed that loads more as it scrolls: the last scroll brought new content and the page goes on.
+                action, operation = more, "SCROLL_DOWN"
+                decision = {**decision, "action": action, "operation": operation}
+            fallback = next((f for f in decision.get("fallback") or [] if f["probability"] >= FALLBACK_MIN
+                             and not _tried_here(f["action"], state, history) and not irreversible(f["action"])
+                             and not _is_useless(f["action"], state, useless)), None) if operation == "BLOCKED" else None
+            if fallback and _page_of(state["url"]) not in fell_back:
+                # BLOCKED while a click the model itself rated was never tried on this page (a row's menu next to a
+                # link that went nowhere, a pager): try that click once before giving up. Once per page.
+                fell_back.add(_page_of(state["url"]))
+                action, operation = fallback["action"], "CLICK"
+                decision = {**decision, "action": action, "operation": operation,
+                            "probability": fallback["probability"]}
+            if operation == "BLOCKED" and _page_of(state["url"]) not in waited_on:
+                waited_on.add(_page_of(state["url"]))
+                wait = getattr(session, "wait_for_change", None)  # a scripted test session may not have it
+                if wait and await wait(page, state, BLOCKED_WAIT_SECONDS):
+                    state, verdict = await look(), None
+                    continue
             if operation in {"DONE", "BLOCKED"}:
                 # The same verdict twice in a row on the same URL stands even if the page is still changing (late
                 # widgets, live counters): deciding again would cost another full request for the same answer.
@@ -137,6 +310,12 @@ async def _run(session, goal, page, on_step, history, confirm, learn, approve, m
                 status = operation.lower()
                 break
             verdict = None
+            if _is_useless(action, state, useless):
+                # The same step again, where it changed nothing last time: offer the page without it, once.
+                state = {**state, "actions": [a for a in state["actions"] if a.get("label") != action["label"]
+                                              or a.get("kind") != action["kind"]]}
+                if any(a.get("kind") in ("click", "fill", "select") for a in state["actions"]):
+                    continue
             if confirm and irreversible(action) and not (approved and same_control(approved, [action])):
                 asked = {"kind": action["kind"], "label": action["label"], "role": action.get("role")}
                 why = Said("stopped before ", Quote(action["label"][:80]),
@@ -204,6 +383,14 @@ async def _run(session, goal, page, on_step, history, confirm, learn, approve, m
             })
             new_state = await look(after=action)
             history[-1]["page_changed"] = new_state["marker"] != state["marker"]
+            if action["kind"] == "scroll":
+                history[-1]["grew"] = (new_state.get("scroll") or {}).get("height", 0) > \
+                    (state.get("scroll") or {}).get("height", 0)
+            if not history[-1]["page_changed"] and action["kind"] in ("click", "fill"):
+                # Nothing happened: the same step is not tried again on this page (it would change nothing again).
+                useless.add(_useless_key(action, state))
+            elif history[-1]["page_changed"]:
+                useless.clear()
             history[-1]["led_to"] = new_state["url"]
             state = new_state
             if on_step and inspect.isawaitable(reported := on_step(history[-1])):
@@ -230,7 +417,7 @@ async def _run(session, goal, page, on_step, history, confirm, learn, approve, m
         if status == "done":
             scores, rank_usage = await rank_blocks(goal, window)
             add_usage(decide_usage, rank_usage)
-        title = await page.title()
+        title = "" if getattr(page, "_ca_dialog", None) is not None else await page.title()
         if status == "done":
             found = best_list(await session.lists(page))  # the page's list of results, read with no model
             items = found["rows"] if found else []
