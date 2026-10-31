@@ -161,7 +161,7 @@ async def ask(approve, pending, detail):
 
 
 async def run(session, goal, url=None, page=None, on_step=None, history=None, confirm=False, learn=False,
-              said=False, values=None, secret=(), approve=None, max_steps=None):
+              said=False, values=None, secret=(), approve=None, max_steps=None, live=None):
     """Run one goal in a tab. Returns a result dict; the tab is left open for the caller to close.
 
     history: steps already done in this tab (a replayed skill that lost its way), so the loop carries on from them.
@@ -176,10 +176,11 @@ async def run(session, goal, url=None, page=None, on_step=None, history=None, co
         filled in and the `secret` ones left as tokens; a token it types is typed as its value. A slot with no value
         ends the run at once with status needs_input. values=None: the goal is taken as it is written.
     max_steps: at most this many actions (default questions.MAX_STEPS).
+    live: {slot: 2FA secret} (totp.py): that slot types the code of the moment it is typed, and is secret.
     A finished run carries `items`: the rows of the page's list of results, read without a model (empty if none).
     """
     page = page or await session.new_tab(url)
-    fill = Values(values, secret)
+    fill = Values(values, secret, live)
     templated = values is not None
     if templated:
         if missing := fill.missing(slots(goal)):

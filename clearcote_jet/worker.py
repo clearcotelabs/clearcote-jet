@@ -23,7 +23,7 @@ import os
 import sys
 import threading
 
-from . import __version__
+from . import __version__, totp
 from .agent import run, stopped
 from .browser import Session
 from .cli import load_env_file, open_or_reuse
@@ -54,6 +54,14 @@ def request_from(line):
         raise BadRequest("values must be an object of strings")
     if not isinstance(secret, list) or not all(isinstance(s, str) for s in secret):
         raise BadRequest("secret must be a list of slot names")
+    live = line.get("totp") or {}
+    if not isinstance(live, dict):
+        raise BadRequest("totp must be an object of slot -> 2FA secret")
+    for name, spec in live.items():
+        try:
+            totp.parse(spec)
+        except (ValueError, TypeError) as e:
+            raise BadRequest(f"totp {name}: {e}") from None
     max_steps = line.get("max_steps")
     if max_steps is not None and (not isinstance(max_steps, int) or isinstance(max_steps, bool) or max_steps < 1):
         raise BadRequest("max_steps must be a positive integer")
@@ -63,7 +71,7 @@ def request_from(line):
             "values": {k: str(v) for k, v in values.items()} if values is not None else None, "secret": secret,
             "confirm": bool(line.get("confirm", False)), "humanize": bool(line.get("humanize", True)),
             "reuse": bool(line.get("reuse", True)), "skills_dir": line.get("skills_dir") or None,
-            "max_steps": max_steps}
+            "max_steps": max_steps, "live": live or None}
 
 
 def result_event(result):
@@ -173,7 +181,7 @@ class Worker:
         except BadRequest as e:
             self.emit({"type": "error", "message": str(e)})
             return 1
-        self.mask = Values(req["values"], req["secret"])
+        self.mask = Values(req["values"], req["secret"], req["live"])
         try:
             session = await Session.connect(req["cdp"], humanize=req["humanize"])
         except Exception as e:  # noqa: BLE001  (no browser there, or not a CDP endpoint)
@@ -190,7 +198,7 @@ class Worker:
                 steps.append(step)
                 self.emit({"type": "step", **step})
 
-            task = dict(on_step=on_step, confirm=req["confirm"], values=req["values"], secret=req["secret"],
+            task = dict(on_step=on_step, confirm=req["confirm"], values=req["values"], secret=req["secret"], live=req["live"],
                         approve=self.approve if req["confirm"] else None, max_steps=req["max_steps"])
             if req["reuse"] and req["url"]:  # learned once, then replayed with no model (see skills.py)
                 go = run_with_skill(session, req["goal"], url=req["url"], page=page,

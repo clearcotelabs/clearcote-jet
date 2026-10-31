@@ -194,7 +194,7 @@ async def replay(session, skill, page, on_step=None, confirm=False, said=False, 
             return needs_values(page, missing)
         try:
             skill = {**skill, **each_string({k: skill[k] for k in ("steps", "end", "list", "shortcut") if k in skill},
-                                            fill.fill)}
+                                            fill.fill_static)}
         except MissingValue as e:
             return needs_values(page, [str(e)])
     else:
@@ -302,7 +302,7 @@ class _Walk:
             await reported
 
     async def holds(self, c):
-        t, v = c.get("type"), str(c.get("value") or "")
+        t, v = c.get("type"), self.fill.fill(str(c.get("value") or ""))
         if t == "text":
             ok = norm(v) in norm(self.state["text"])
         elif t == "control":
@@ -363,7 +363,7 @@ class _Walk:
             return None
         if kind == "goto":
             before = self.state
-            await s.goto(self.page, step["url"])
+            await s.goto(self.page, self.fill.fill(step["url"]))
             await self.record("goto", f"Go to {rec.get('url', step['url'])}", before=before)
             return None
         if kind == "key":
@@ -372,7 +372,7 @@ class _Walk:
             await self.record("key", f"Press {key}")
             return None
         if kind == "js":
-            await s.run_js(self.page, step["code"])
+            await s.run_js(self.page, self.fill.fill(step["code"]))
             await self.record("js", "Run JavaScript")
             return None
         if step.get("selector"):
@@ -382,7 +382,7 @@ class _Walk:
                 if stop:
                     return stop
             before = self.state
-            await s.act_on_selector(self.page, step["selector"], kind, step.get("text"))
+            await s.act_on_selector(self.page, step["selector"], kind, self.fill.fill(step.get("text")))
             await self.record(kind, label, self.fill.show(rec.get("text")), before=before)
             return None
         return await self.located(step, rec, n)
@@ -419,14 +419,14 @@ class _Walk:
             if action is None:
                 return "diverged", Said(f"step {n} (", Quote(step["label"][:60]), ") was gone once it was confirmed"), None
         try:
-            await s.act(self.page, state, action, step.get("text"))
+            await s.act(self.page, state, action, self.fill.fill(step.get("text")))
         except StalePage:  # the page moved under the step: look again, once
             state = await self.look(step)
             action = _control(step, state)
             try:
                 if action is None:
                     raise StalePage("gone")
-                await s.act(self.page, state, action, step.get("text"))
+                await s.act(self.page, state, action, self.fill.fill(step.get("text")))
             except StalePage:
                 return "diverged", Said(f"step {n} (", Quote(step["label"][:60]), ") kept changing under the replay"), None
         await self.record(action["kind"], action["label"], self.fill.show(rec.get("text")), action=action, before=state)
@@ -479,7 +479,7 @@ async def _replay(session, skill, recorded, page, on_step, confirm, approve, fil
 
 
 async def run_with_skill(session, goal, url=None, page=None, store=None, on_step=None, confirm=False, said=False,
-                         values=None, secret=(), approve=None, max_steps=None):
+                         values=None, secret=(), approve=None, max_steps=None, live=None):
     """run(), learned once: the first time a goal is run from a start page it is learned and saved as a skill; later
     times the skill is replayed with no model, and where the page changed the loop takes over and the skill is
     written again. result["skill"]["used"]: learned, replayed, shortcut or repaired.
@@ -491,7 +491,7 @@ async def run_with_skill(session, goal, url=None, page=None, store=None, on_step
     start_url = url or page.url
     store = store or SkillStore()
     templated = values is not None and bool(SLOT.search(goal or ""))
-    fill = Values(values, secret)
+    fill = Values(values, secret, live)
     key = canonical(goal) if templated else goal
     skill = store.get(key, start_url)
     if skill and templated and skill.get("slots") is None:
@@ -503,7 +503,7 @@ async def run_with_skill(session, goal, url=None, page=None, store=None, on_step
         result["skill"] = {"used": "replayed" if skill else None}
         return result if said else plain(result)
     loop = dict(on_step=on_step, confirm=confirm, learn=True, said=said, approve=approve, max_steps=max_steps,
-                values=values if templated else None, secret=secret)
+                values=values if templated else None, secret=secret, live=live if templated else None)
     if skill:
         result = await replay(session, skill, page, on_step=on_step, confirm=confirm, said=said, values=fill,
                               approve=approve)

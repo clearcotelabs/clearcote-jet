@@ -14,6 +14,8 @@ import contextvars
 import json
 import re
 
+from . import totp
+
 SLOT = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*\}\}")
 # A value shorter than this is only swapped for its token where it is the whole text (a typed "1" is a slot; every
 # "1" in a page line is not).
@@ -43,9 +45,13 @@ def canonical(text):
 class Values:
     """The values for one run of a template; the names in `secret` are never shown to the model or written down."""
 
-    def __init__(self, values=None, secret=()):
-        self.values = {str(k): "" if v is None else str(v) for k, v in (values or {}).items()}
-        self.secret = {str(s) for s in secret or ()}
+    def __init__(self, values=None, secret=(), live=None):
+        """live: {slot: 2FA secret} (totp.py). Such a slot's value is the code at the moment it is used, and it is
+        always secret."""
+        plain = {str(k): "" if v is None else str(v) for k, v in (values or {}).items()}
+        self.live = {str(k): totp.parse(v) for k, v in (live or {}).items()}
+        self.values = _LiveValues(plain, self.live)
+        self.secret = {str(s) for s in secret or ()} | set(self.live)
 
     def __bool__(self):
         return bool(self.values)
@@ -57,6 +63,12 @@ class Values:
         """What the model is given: plain slots filled in, secret slots (and slots with no value) left as tokens."""
         return SLOT.sub(lambda m: self.values[m.group(1)] if m.group(1) in self.values and m.group(1) not in self.secret
                         else token(m.group(1)), template or "")
+
+    def fill_static(self, text):
+        """fill(), but a live slot's token stays: its code is worked out when it is typed (fill() then)."""
+        if text is None or not self.live:
+            return self.fill(text)
+        return SLOT.sub(lambda m: m.group(0) if m.group(1) in self.live else self.fill(m.group(0)), text)
 
     def fill(self, text):
         """The keys to press for `text`: every token replaced by its value. MissingValue for a token with none."""
@@ -77,7 +89,8 @@ class Values:
                         else m.group(0), text)
 
     def _pairs(self, names):
-        pairs = [(self.values[n], token(n)) for n in names if self.values.get(n)]
+        pairs = [(v, token(n)) for n in names for v in (totp.around(self.live[n]) if n in self.live else
+                                                         [self.values.get(n)]) if v]
         return sorted(pairs, key=lambda p: -len(p[0]))  # the longest first, so one value inside another stays whole
 
     def templatize(self, text, names):
@@ -104,6 +117,22 @@ class Values:
 
     def secrets(self):
         return tuple(self._pairs(sorted(self.secret)))
+
+
+class _LiveValues(dict):
+    """Plain values, and live ones whose value is the 2FA code at the moment it is read."""
+
+    def __init__(self, plain, live):
+        super().__init__(plain)
+        self.live = live
+        for name in live:
+            dict.__setitem__(self, name, "")
+
+    def __getitem__(self, name):
+        return totp.code(self.live[name]) if name in self.live else dict.__getitem__(self, name)
+
+    def get(self, name, default=None):
+        return self[name] if name in self else default
 
 
 def each_string(obj, fn):
