@@ -105,6 +105,42 @@ A slot can be **secret**: the model is shown the goal with that slot left as `{{
 token like any other word of the goal, and the keys pressed are the value's. The trace, the result, the saved skill
 and every request to the model hold the token, never the value, even where the page shows it back.
 
+### Steps edited by hand
+
+A skill can be edited, or written from scratch, and then replays exactly as written. Besides the recorded steps (a
+control found by its role and label), an edited skill can go to an address, wait, wait until something is true, press a
+key, run the page's own JavaScript, click or type into the first element matching a CSS selector, and wrap other steps
+in `if` (with `else`) and `while` (at most `max` rounds) blocks:
+
+```json
+{"steps": [
+  {"kind": "if", "condition": {"type": "text", "value": "We use cookies"},
+   "then": [{"kind": "click", "role": "button", "label": "Accept cookies"}], "else": []},
+  {"kind": "while", "condition": {"type": "control", "value": "Load more"},
+   "then": [{"kind": "click", "label": "Load more"}], "max": 10},
+  {"kind": "wait_for", "condition": {"type": "url", "value": "/results"}, "seconds": 15},
+  {"kind": "fill", "selector": "#q", "text": "{{query}}"},
+  {"kind": "key", "key": "Enter"},
+  {"kind": "js", "code": "document.querySelector('#more')?.click();"},
+  {"kind": "goto", "url": "https://example.com/next"},
+  {"kind": "wait", "seconds": 2}
+]}
+```
+
+A condition is `{"type", "value", "not"?}`: `text` (the page shows it), `control` (a control with that label is
+there), `url` (the address contains it), `selector` (an element matches it) or `js` (the expression is true in the
+page). An edited skill ends wherever its steps end, and a run that cannot get through them stops there with
+`diverged` and the step number (`skill.used` is `edited`): it is never learned over.
+
+```
+clearcote-jet skill get    --goal "Search for {{query}}" --url https://shop.example/    # {"ok", "skill"}
+clearcote-jet skill put    --goal "Search for {{query}}" --url https://shop.example/ < steps.json
+clearcote-jet skill forget --goal "Search for {{query}}" --url https://shop.example/
+```
+
+`put` checks every step first and says which one cannot run. The Clearcote Profile Manager's Tasks page edits a saved
+task's steps this way.
+
 ## Results without a model
 
 When a run finishes on a page with a list of results (search hits, products, listings), `items` holds its rows, read

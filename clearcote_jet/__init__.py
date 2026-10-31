@@ -1,6 +1,6 @@
 """Goal-driven browser agent on Clearcote."""
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 from .agent import run  # noqa: E402
 from .browser import Session  # noqa: E402
