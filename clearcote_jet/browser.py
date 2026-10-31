@@ -821,6 +821,48 @@ class Session:
         got = await self._eval(page, CANDIDATES_JS % json.dumps(spec))
         return (got or {}).get("candidates", [])
 
+    # --- steps written by hand (an edited skill): by address, CSS selector, key or the page's own JavaScript ---
+
+    async def goto(self, page, url):
+        self.check_open(page)
+        await page.goto(url, wait_until="domcontentloaded")
+
+    async def run_js(self, page, code):
+        """A step's own JavaScript, run as the page's scripts run (not in the isolated world): statements, awaited."""
+        self.check_open(page)
+        return await page.evaluate("async () => {\n" + code + "\n}")
+
+    async def js_true(self, page, expression):
+        """Whether a JavaScript expression is true on the page, as the page's scripts see it."""
+        self.check_open(page)
+        return bool(await page.evaluate("async () => (\n" + expression + "\n)"))
+
+    async def has_selector(self, page, css):
+        self.check_open(page)
+        try:
+            return bool(await page.evaluate("s => !!document.querySelector(s)", css))
+        except PlaywrightError as e:
+            raise ValueError(f"not a CSS selector: {css}") from e
+
+    async def act_on_selector(self, page, css, kind, text=None):
+        """Click, or click and type into, the first element matching a CSS selector, along the same mouse path."""
+        self.check_open(page)
+        try:
+            el = page.locator(css).first
+            await el.scroll_into_view_if_needed(timeout=5000)
+            box = await el.bounding_box()
+        except PlaywrightError as e:
+            raise StalePage(f"{css} is not on the page") from e
+        if not box:
+            raise StalePage(f"{css} is not on the page")
+        box = {**box, "input": kind == "fill"}
+        x, y = aim_point(box) if self.humanize else (box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        await page.mouse.click(x, y)  # humanized: curved, Fitts-timed path when humanize is on
+        if kind == "fill":
+            await page.keyboard.press(SELECT_ALL)
+            await page.keyboard.press("Backspace")
+            await page.keyboard.type(text or "")
+
     async def fetch_json(self, page, request):
         """Repeat a recorded JSON request from inside the page: the tab's own cookies and network, from the isolated
         world, so page scripts don't see it. None when it fails or the answer is not JSON."""

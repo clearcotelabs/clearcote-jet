@@ -146,6 +146,22 @@ async def run_goal(args):
         await session.close()
 
 
+def skill_command(args, stdin):
+    """get: {"ok", "skill"} (null when the task was not learned); put: the steps on stdin as {"steps": [...]};
+    forget: {"ok", "forgot"}. An error is {"ok": false, "error"}, never a traceback."""
+    from .skills import SkillStore, forget_skill, get_skill, put_edited
+    store = SkillStore(args.skills_dir)
+    try:
+        if args.action == "get":
+            return {"ok": True, "skill": get_skill(store, args.goal, args.url)}
+        if args.action == "forget":
+            return {"ok": True, "forgot": forget_skill(store, args.goal, args.url)}
+        body = json.loads(stdin.read() or "{}")
+        return {"ok": True, "skill": put_edited(store, args.goal, args.url, body.get("steps"))}
+    except (ValueError, OSError) as e:
+        return {"ok": False, "error": str(e)}
+
+
 def main():
     parser = argparse.ArgumentParser(prog="clearcote-jet")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -173,6 +189,11 @@ def main():
     d.add_argument("--url", help="open this first; without it the tab already open is read")
     d.add_argument("--row", help="read inside this repeating row, and give selectors relative to it")
     sub.add_parser("worker", help="run one task for another program: JSON lines on stdin and stdout")
+    k = sub.add_parser("skill", help="read, save (as edited by hand) or forget the steps a task replays; JSON out")
+    k.add_argument("action", choices=["get", "put", "forget"])
+    k.add_argument("--goal", required=True)
+    k.add_argument("--url", required=True, help="the start page the task runs from")
+    k.add_argument("--skills-dir", help="default: CLEARCOTE_JET_SKILLS, or ~/.clearcote-jet/skills")
     for p in (b, r, d):
         p.add_argument("--profile", default=str(DEFAULT_PROFILE))
         p.add_argument("--headless", action="store_true")
@@ -181,6 +202,10 @@ def main():
     if args.command == "worker":
         from .worker import main as worker_main
         worker_main()
+        return
+    if args.command == "skill":
+        utf8_output()
+        print(json.dumps(skill_command(args, sys.stdin), ensure_ascii=False))
         return
     utf8_output()
     try:

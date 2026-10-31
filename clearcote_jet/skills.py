@@ -21,10 +21,13 @@ import hashlib
 import inspect
 import json
 import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
+
+from playwright.async_api import Error as PlaywrightError
 
 from .agent import ask, needs_values, run
 from .browser import StalePage
@@ -202,6 +205,234 @@ async def replay(session, skill, page, on_step=None, confirm=False, said=False, 
     return result if said else plain(result)  # said: the messages as describe.Said, for the MCP server
 
 
+# --- the steps of a skill, as recorded or as edited by hand ---------------------------------------------------------
+#
+# Recorded steps find a control by its role and label (locate()). A skill edited by hand may also have:
+#   {"kind": "click"|"fill", "selector": "css", "text"?}       the first element matching a CSS selector
+#   {"kind": "goto", "url"}                                   open an address
+#   {"kind": "wait", "seconds"?}                              pause (1 s when no seconds are given)
+#   {"kind": "key", "key"}                                    press a key: Enter, Tab, Escape, ArrowDown, ...
+#   {"kind": "js", "code"}                                    the page's own JavaScript (statements)
+#   {"kind": "wait_for", "condition", "seconds"?}             until the condition is true (15 s by default)
+#   {"kind": "if", "condition", "then": [...], "else": [...]}
+#   {"kind": "while", "condition", "then": [...], "max"?}     at most `max` rounds (10 by default)
+# A condition: {"type": "text"|"control"|"url"|"selector"|"js", "value", "not"?}: the page shows this text, offers a
+# control with this label, its address contains this, an element matches this selector, this expression is true.
+
+FLOW_KINDS = {"goto", "key", "js", "wait_for", "if", "while"}
+STEP_KINDS = {"click", "fill", "select", "scroll", "find", "wait"} | FLOW_KINDS
+CONDITION_TYPES = {"text", "control", "url", "selector", "js"}
+KEYS = {"enter": "Enter", "tab": "Tab", "escape": "Escape", "space": "Space", "backspace": "Backspace",
+        "delete": "Delete", "arrowdown": "ArrowDown", "arrowup": "ArrowUp", "arrowleft": "ArrowLeft",
+        "arrowright": "ArrowRight", "pagedown": "PageDown", "pageup": "PageUp", "home": "Home", "end": "End"}
+MAX_STEPS, MAX_DEPTH, MAX_ROUNDS = 500, 6, 100
+
+
+def describe_condition(c):
+    what = {"text": "the page shows", "control": "there is a control", "url": "the address contains",
+            "selector": "an element matches", "js": "this is true:"}.get(c.get("type"), "?")
+    return f"{'not ' if c.get('not') else ''}{what} {str(c.get('value') or '')[:80]!r}"
+
+
+def check_steps(steps, depth=0, count=None):
+    """Raise ValueError naming the first step that cannot run; return how many steps there are (blocks included)."""
+    count = count if count is not None else [0]
+    if not isinstance(steps, list):
+        raise ValueError("steps must be a list")
+    if depth > MAX_DEPTH:
+        raise ValueError(f"blocks are nested more than {MAX_DEPTH} deep")
+    for i, st in enumerate(steps):
+        count[0] += 1
+        if count[0] > MAX_STEPS:
+            raise ValueError(f"more than {MAX_STEPS} steps")
+        where = f"step {i + 1}"
+        if not isinstance(st, dict) or st.get("kind") not in STEP_KINDS:
+            raise ValueError(f"{where}: unknown kind {st.get('kind') if isinstance(st, dict) else st!r}")
+        k = st["kind"]
+        if k in ("click", "fill", "select") and not (st.get("selector") or st.get("label")):
+            raise ValueError(f"{where}: {k} needs a label or a CSS selector")
+        if k == "select" and st.get("selector"):
+            raise ValueError(f"{where}: a dropdown is chosen by its label, not a selector")
+        if k == "fill" and not isinstance(st.get("text"), str):
+            raise ValueError(f"{where}: fill needs the text to type")
+        if k == "goto" and not re.match(r"^https?://", str(st.get("url") or "")) and "{{" not in str(st.get("url")):
+            raise ValueError(f"{where}: go to needs an http(s) address")
+        if k == "key" and str(st.get("key") or "").lower() not in KEYS:
+            raise ValueError(f"{where}: unknown key {st.get('key')!r}")
+        if k == "js" and not str(st.get("code") or "").strip():
+            raise ValueError(f"{where}: JavaScript needs code")
+        for n in ("seconds", "max"):
+            if n in st and not (isinstance(st[n], (int, float)) and 0 <= st[n] <= (MAX_ROUNDS if n == "max" else 600)):
+                raise ValueError(f"{where}: {n} is out of range")
+        if k in ("wait_for", "if", "while"):
+            c = st.get("condition")
+            if not isinstance(c, dict) or c.get("type") not in CONDITION_TYPES or not str(c.get("value") or "").strip():
+                raise ValueError(f"{where}: needs a condition (type and value)")
+        if k in ("if", "while"):
+            check_steps(st.get("then") or [], depth + 1, count)
+        if k == "if":
+            check_steps(st.get("else") or [], depth + 1, count)
+    return count[0]
+
+
+class _Walk:
+    """One replay going through its steps. state: the page as last observed."""
+
+    def __init__(self, session, page, fill, confirm, approve, on_step, trace, ms):
+        self.session, self.page, self.fill, self.confirm, self.approve = session, page, fill, confirm, approve
+        self.on_step, self.trace, self.ms, self.state = on_step, trace, ms, None
+
+    async def look(self, step=None):  # a link inside a closed menu is only offered when the menus are asked for
+        menus = bool(step and step.get("in_menu"))
+        self.state = await (self.session.observe(self.page, menus=True) if menus else self.session.observe(self.page))
+        return self.state
+
+    async def record(self, kind, label, text=None, action=None, before=None):
+        before = before or self.state
+        new_state = await self.session.observe(self.page, after=action or {"kind": kind})
+        self.trace.append({"step": len(self.trace) + 1, "action": label, "kind": kind,
+                           "role": (action or {}).get("role"), "text": text, "text_source": None,
+                           "probability": None, "alternatives": [], "confidence": None, "decide_ms": 0,
+                           "at_ms": self.ms(), "url": before["url"],
+                           "target": target_info(action, before["actions"]) if action and "node" in action else {},
+                           "page_changed": new_state["marker"] != before["marker"], "led_to": new_state["url"],
+                           "replayed": True})
+        self.state = new_state
+        if self.on_step and inspect.isawaitable(reported := self.on_step(self.trace[-1])):
+            await reported
+
+    async def holds(self, c):
+        t, v = c.get("type"), str(c.get("value") or "")
+        if t == "text":
+            ok = norm(v) in norm(self.state["text"])
+        elif t == "control":
+            ok = any(norm(a.get("label")) == norm(v) for a in self.state["actions"])
+        elif t == "url":
+            ok = v in (self.page.url or "")
+        elif t == "selector":
+            ok = await self.session.has_selector(self.page, v)
+        else:
+            ok = await self.session.js_true(self.page, v)
+        return ok != bool(c.get("not"))
+
+    async def steps(self, steps, recorded, prefix):
+        """-> (status, detail, pending): done when every step ran."""
+        for i, step in enumerate(steps):
+            n = f"{prefix}{i + 1}"
+            rec = recorded[i] if i < len(recorded) else step
+            try:
+                out = await self.one(step, rec, n)
+            except StalePage as e:
+                out = ("diverged", Said(f"step {n}: {e}"), None)
+            except (PlaywrightError, ValueError) as e:  # a selector, an address or the page's JavaScript failed
+                out = ("diverged", Said(f"step {n} ({step['kind']}) failed: {str(e).splitlines()[0][:200]}"), None)
+            if out is not None:
+                return out
+        return "done", None, None
+
+    async def one(self, step, rec, n):
+        """Do one step. None to carry on, else (status, detail, pending) to stop."""
+        kind, s = step["kind"], self.session
+        if kind == "wait":
+            await asyncio.sleep(float(step.get("seconds", 1.0)))
+            await self.look()
+            return None
+        if kind == "if":
+            yes = await self.holds(step["condition"])
+            await self.record("if", f"If {describe_condition(step['condition'])}: {'yes' if yes else 'no'}")
+            branch = "then" if yes else "else"
+            status, detail, pending = await self.steps(step.get(branch) or [], rec.get(branch) or [], f"{n}.")
+            return None if status == "done" else (status, detail, pending)
+        if kind == "while":
+            for _ in range(int(step.get("max", 10))):
+                if not await self.holds(step["condition"]):
+                    break
+                status, detail, pending = await self.steps(step.get("then") or [], rec.get("then") or [], f"{n}.")
+                if status != "done":
+                    return status, detail, pending
+                await self.look()
+            return None
+        if kind == "wait_for":
+            deadline = time.monotonic() + float(step.get("seconds", 15))
+            while not await self.holds(step["condition"]):
+                if time.monotonic() > deadline:
+                    return "diverged", Said(f"step {n}: waited {step.get('seconds', 15)} s and still not "
+                                            f"{describe_condition(step['condition'])}"), None
+                await asyncio.sleep(0.5)
+                await self.look()
+            return None
+        if kind == "goto":
+            before = self.state
+            await s.goto(self.page, step["url"])
+            await self.record("goto", f"Go to {rec.get('url', step['url'])}", before=before)
+            return None
+        if kind == "key":
+            key = KEYS[str(step["key"]).lower()]
+            await s.act(self.page, self.state, {"id": "key", "kind": "key", "key": key, "label": f"Press {key}"})
+            await self.record("key", f"Press {key}")
+            return None
+        if kind == "js":
+            await s.run_js(self.page, step["code"])
+            await self.record("js", "Run JavaScript")
+            return None
+        if step.get("selector"):
+            label = step.get("label") or step["selector"]
+            if self.confirm and irreversible({"kind": kind, "label": label}):
+                stop = await self.confirmed({"kind": kind, "label": label, "role": None})
+                if stop:
+                    return stop
+            before = self.state
+            await s.act_on_selector(self.page, step["selector"], kind, step.get("text"))
+            await self.record(kind, label, self.fill.show(rec.get("text")), before=before)
+            return None
+        return await self.located(step, rec, n)
+
+    async def confirmed(self, asked):
+        """Ask before something that can't be taken back. None to go ahead, else how the replay stops."""
+        why = Said("stopped before ", Quote(asked["label"][:80]), ", which can't be taken back: confirm to go ahead")
+        if self.approve is None:
+            return "needs_confirmation", why, asked
+        if not await ask(self.approve, asked, why):
+            return "cancelled", Said("not confirmed: ", Quote(asked["label"][:80])), None
+        return None
+
+    async def located(self, step, rec, n):
+        """A recorded step: find its control again by role and label, and use it."""
+        s, state = self.session, self.state
+        if step.get("in_menu"):
+            state = await self.look(step)
+        action = _control(step, state)
+        if action is None:  # the page may still be filling in
+            await asyncio.sleep(1.0)
+            state = await self.look(step)
+            action = _control(step, state)
+        if action is None:
+            if step.get("optional") or already_chosen(step, state["actions"]):
+                return None
+            return "diverged", Said(f"step {n} ({step['kind']} ", Quote(step["label"][:60]), ") is not on the page"), None
+        if self.confirm and irreversible(action):
+            stop = await self.confirmed({"kind": action["kind"], "label": action["label"], "role": action.get("role")})
+            if stop:
+                return stop
+            state = await self.look(step)  # the page may have moved on while the person decided
+            action = _control(step, state)
+            if action is None:
+                return "diverged", Said(f"step {n} (", Quote(step["label"][:60]), ") was gone once it was confirmed"), None
+        try:
+            await s.act(self.page, state, action, step.get("text"))
+        except StalePage:  # the page moved under the step: look again, once
+            state = await self.look(step)
+            action = _control(step, state)
+            try:
+                if action is None:
+                    raise StalePage("gone")
+                await s.act(self.page, state, action, step.get("text"))
+            except StalePage:
+                return "diverged", Said(f"step {n} (", Quote(step["label"][:60]), ") kept changing under the replay"), None
+        await self.record(action["kind"], action["label"], self.fill.show(rec.get("text")), action=action, before=state)
+        return None
+
+
 async def _replay(session, skill, recorded, page, on_step, confirm, approve, fill):
     started = time.perf_counter()
     ms = lambda: round((time.perf_counter() - started) * 1000)  # noqa: E731
@@ -214,70 +445,13 @@ async def _replay(session, skill, recorded, page, on_step, confirm, approve, fil
     if via == "steps":
         rows = []
 
-        def look(step):  # a link inside a closed menu is only offered when the menus are asked for
-            return session.observe(page, menus=True) if step.get("in_menu") else session.observe(page)
-
-        state = await session.observe(page)
-        for i, step in enumerate(skill["steps"]):
-            if step["kind"] == "wait":
-                await asyncio.sleep(1.0)
-                state = await session.observe(page)
-                continue
-            if step.get("in_menu"):
-                state = await look(step)
-            action = _control(step, state)
-            if action is None:  # the page may still be filling in
-                await asyncio.sleep(1.0)
-                state = await look(step)
-                action = _control(step, state)
-            if action is None:
-                if step.get("optional") or already_chosen(step, state["actions"]):
-                    continue
-                status, detail = "diverged", Said(f"step {i + 1} ({step['kind']} ", Quote(step["label"][:60]),
-                                                  ") is not on the page")
-                break
-            if confirm and irreversible(action):
-                asked = {"kind": action["kind"], "label": action["label"], "role": action.get("role")}
-                why = Said("stopped before ", Quote(action["label"][:80]),
-                           ", which can't be taken back: confirm to go ahead")
-                if approve is None:
-                    status, pending, detail = "needs_confirmation", asked, why
-                    break
-                if not await ask(approve, asked, why):
-                    status, detail = "cancelled", Said("not confirmed: ", Quote(action["label"][:80]))
-                    break
-                state = await look(step)  # the page may have moved on while the person decided
-                action = _control(step, state)
-                if action is None:
-                    status, detail = "diverged", Said(f"step {i + 1} (", Quote(step["label"][:60]),
-                                                      ") was gone once it was confirmed")
-                    break
-            try:
-                await session.act(page, state, action, step.get("text"))
-            except StalePage:  # the page moved under the step: look again, once
-                state = await look(step)
-                action = _control(step, state)
-                try:
-                    if action is None:
-                        raise StalePage("gone")
-                    await session.act(page, state, action, step.get("text"))
-                except StalePage:
-                    status, detail = "diverged", Said(f"step {i + 1} (", Quote(step["label"][:60]),
-                                                      ") kept changing under the replay")
-                    break
-            new_state = await session.observe(page, after=action)
-            trace.append({"step": len(trace) + 1, "action": action["label"], "kind": action["kind"],
-                          "role": action.get("role"), "text": fill.show(recorded[i].get("text")),
-                          "text_source": None,
-                          "probability": None, "alternatives": [], "confidence": None, "decide_ms": 0, "at_ms": ms(),
-                          "url": state["url"], "target": target_info(action, state["actions"]),
-                          "page_changed": new_state["marker"] != state["marker"], "led_to": new_state["url"],
-                          "replayed": True})
-            state = new_state
-            if on_step and inspect.isawaitable(reported := on_step(trace[-1])):
-                await reported
-        if status == "done":  # it must end where the learned run ended, and read its list there if it had one
-            if not ends_where_learned(skill.get("end") or {}, state):
+        walk = _Walk(session, page, fill, confirm, approve, on_step, trace, ms)
+        walk.state = await session.observe(page)
+        status, detail, pending = await walk.steps(skill["steps"], recorded, "")
+        state = walk.state
+        # it must end where the learned run ended (an edited skill ends where its steps end), and read its list there
+        if status == "done":
+            if not skill.get("edited") and not ends_where_learned(skill.get("end") or {}, state):
                 status, detail = "diverged", "the steps ended on a different page than when the skill was learned"
             elif skill.get("list"):
                 rows = await session.extract(page, skill["list"])
@@ -335,6 +509,10 @@ async def run_with_skill(session, goal, url=None, page=None, store=None, on_step
                               approve=approve)
         if result["status"] != "diverged":
             return result
+        if skill.get("edited"):
+            # steps written by hand are never learned over: the run stops where they stopped, and says why
+            result["skill"] = {**result.get("skill", {}), "used": "edited"}
+            return result
         why = result["detail"]
         # the page changed since the skill was learned: the loop carries on from here, and the skill is written again
         result = await run(session, goal, page=page, history=result["trace"], **loop)
@@ -346,3 +524,46 @@ async def run_with_skill(session, goal, url=None, page=None, store=None, on_step
     if new:
         result["skill"]["saved"] = str(store.put(new))
     return result
+
+
+# --- reading and writing a task's skill by hand (clearcote-jet skill get|put|forget) --------------------------------
+
+def _key(goal):
+    """What run_with_skill keys a goal on: its template when it has {{slots}} (a run then always has values)."""
+    templated = bool(SLOT.search(goal or ""))
+    return (canonical(goal) if templated else goal), templated
+
+
+def get_skill(store, goal, start_url):
+    """The skill a run of this goal from this page would use, or None (as run_with_skill decides it)."""
+    key, templated = _key(goal)
+    skill = store.get(key, start_url)
+    if skill and templated and skill.get("slots") is None:
+        return None
+    return skill
+
+
+def put_edited(store, goal, start_url, steps):
+    """Save steps written by hand as the skill for this goal and page. They replay as written: a run that does
+    not get through them stops there (it is not learned over), and a run that does ends wherever they end."""
+    check_steps(steps)
+    key, templated = _key(goal)
+    old = get_skill(store, goal, start_url) or {}
+    skill = {k: v for k, v in old.items() if k not in ("shortcut", "end")}  # the steps decide what happens now
+    skill.update({"version": TEMPLATE_VERSION if templated else VERSION, "goal": key, "start_url": start_url,
+                  "steps": steps, "edited": True,
+                  "edited_at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+    if templated:
+        used = slots(json.dumps([steps, skill.get("list")], ensure_ascii=False))
+        skill["slots"] = used
+        skill["secret"] = [n for n in old.get("secret") or [] if n in used]
+    else:
+        skill.pop("slots", None)
+        skill.pop("secret", None)
+    store.put(skill)
+    return skill
+
+
+def forget_skill(store, goal, start_url):
+    key, _ = _key(goal)
+    return store.forget(key, start_url)
