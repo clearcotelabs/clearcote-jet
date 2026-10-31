@@ -212,6 +212,7 @@ nothing else (logs go to stderr), and it is plain ASCII.
 | `humanize` | human-paced mouse and keys (default on) |
 | `reuse` | learn the task once and replay it with no model after (default on) |
 | `skills_dir` | where skills are kept (default `CLEARCOTE_JET_SKILLS`, then `~/.clearcote-jet/skills`) |
+| `totp` | `{"otp": "<2FA secret>"}`: a slot whose value is a 2FA code (TOTP; base32 or an `otpauth://` link), worked out when it is typed, not when the run starts (in a code's last 3 s, the next one). Always secret, and masked wherever it would show |
 | `max_steps` | at most this many actions (default 60) |
 
 Events, by `type`:
